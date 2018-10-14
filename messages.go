@@ -4,28 +4,20 @@ type OriginRequest struct {
 	WebSocketEvent *WebSocketEvent
 }
 
-type OriginResponse struct {
-	Action *Action
-}
-
-type Action struct {
-	WebSocketActions []*WebSocketAction
-}
+type OriginResponse struct{}
 
 type WebSocketEventConnectionEstablished struct {
 	Subprotocol string
 }
 
 type WebSocketEvent struct {
-	ConnectionId []byte
+	ConnectionId Id
 
 	ConnectionEstablished *WebSocketEventConnectionEstablished
+	MessageReceived       *WebSocketMessage
 }
 
-type WebSocketAction struct {
-	ConnectionId []byte
-
-	SendFrames []struct {
-		Data []byte
-	}
+type WebSocketMessage struct {
+	Binary []byte
+	Text   *string
 }

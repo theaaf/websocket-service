@@ -49,16 +49,30 @@ func TestService(t *testing.T) {
 		Subprotocols: []string{"test"},
 		Origin:       origin,
 	}
-	defer s0.Close()
-
 	client := newTestClient(t, s0, s0.Subprotocols)
-	defer client.Close()
+
+	defer func() {
+		assert.NoError(t, client.Close())
+		assert.NoError(t, s0.Close())
+	}()
+
+	var connectionId Id
 
 	origin.WaitForRequest(func(request *OriginRequest) (*OriginResponse, error) {
 		require.NotNil(t, request.WebSocketEvent)
 		assert.NotEmpty(t, request.WebSocketEvent.ConnectionId)
+		connectionId = request.WebSocketEvent.ConnectionId
 		require.NotNil(t, request.WebSocketEvent.ConnectionEstablished)
 		assert.Equal(t, "test", request.WebSocketEvent.ConnectionEstablished.Subprotocol)
+		return nil, nil
+	})
+
+	require.NoError(t, client.WriteMessage(websocket.TextMessage, []byte("foo")))
+
+	origin.WaitForRequest(func(request *OriginRequest) (*OriginResponse, error) {
+		require.NotNil(t, request.WebSocketEvent)
+		assert.Equal(t, connectionId, request.WebSocketEvent.ConnectionId)
+		assert.Equal(t, "foo", *request.WebSocketEvent.MessageReceived.Text)
 		return nil, nil
 	})
 }
