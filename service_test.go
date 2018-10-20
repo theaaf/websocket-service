@@ -48,6 +48,7 @@ func TestService(t *testing.T) {
 	s0 := &Service{
 		Subprotocols: []string{"test"},
 		Origin:       origin,
+		Cluster:      NewMemoryCluster(),
 	}
 	client := newTestClient(t, s0, s0.Subprotocols)
 

@@ -7,12 +7,21 @@ import (
 
 type Id []byte
 
-func NewId() (Id, error) {
-	id := make([]byte, 20)
-	if _, err := rand.Read(id); err != nil {
+func NewId(address []byte) (Id, error) {
+	id := make([]byte, 21+len(address))
+	id[0] = 0
+	copy(id[1:], address)
+	if _, err := rand.Read(id[1+len(address):]); err != nil {
 		return nil, err
 	}
 	return id, nil
+}
+
+func (id Id) Address() []byte {
+	if id[0] != 0 || len(id) < 21 {
+		return nil
+	}
+	return id[1 : len(id)-20]
 }
 
 func (id Id) String() string {

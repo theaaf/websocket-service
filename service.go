@@ -13,7 +13,12 @@ import (
 type Service struct {
 	Subprotocols []string
 	Origin       Origin
+	Cluster      Cluster
 	Logger       logrus.FieldLogger
+
+	initOnce sync.Once
+
+	localAddress []byte
 
 	connectionsMutex sync.Mutex
 	connections      map[string]*Connection
@@ -21,6 +26,8 @@ type Service struct {
 }
 
 func (s *Service) ServeHTTP(w http.ResponseWriter, r *http.Request) {
+	s.init()
+
 	if websocket.IsWebSocketUpgrade(r) {
 		s.serveWebSocket(w, r)
 		return
@@ -28,13 +35,16 @@ func (s *Service) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 	http.Error(w, "not a websocket upgrade", http.StatusBadRequest)
 }
 
-func (s *Service) initConnections() {
-	if s.connections == nil {
-		s.connections = make(map[string]*Connection)
-	}
-	if s.connectionIds == nil {
-		s.connectionIds = make(map[*Connection]Id)
-	}
+func (s *Service) init() {
+	s.initOnce.Do(func() {
+		if s.connections == nil {
+			s.connections = make(map[string]*Connection)
+		}
+		if s.connectionIds == nil {
+			s.connectionIds = make(map[*Connection]Id)
+		}
+		s.localAddress = s.Cluster.Address()
+	})
 }
 
 func (s *Service) connectionLogger(connectionId Id) logrus.FieldLogger {
@@ -57,7 +67,7 @@ func (s *Service) serveWebSocket(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	id, err := NewId()
+	id, err := NewId(s.localAddress)
 	if err != nil {
 		http.Error(w, err.Error(), http.StatusInternalServerError)
 		return
@@ -67,7 +77,6 @@ func (s *Service) serveWebSocket(w http.ResponseWriter, r *http.Request) {
 	logger.Info("connection established")
 
 	s.connectionsMutex.Lock()
-	s.initConnections()
 	connection := NewConnection(conn, logger, s.connectionHandler(id, logger))
 	s.connections[string(id)] = connection
 	s.connectionIds[connection] = id
@@ -145,8 +154,9 @@ func (s *Service) Close() error {
 }
 
 func (s *Service) CloseConnection(id Id) error {
+	s.init()
+
 	s.connectionsMutex.Lock()
-	s.initConnections()
 	connection, ok := s.connections[string(id)]
 	s.connectionsMutex.Unlock()
 	if !ok {
