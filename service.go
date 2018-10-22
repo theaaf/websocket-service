@@ -11,14 +11,24 @@ import (
 )
 
 type Service struct {
+	// The URI to provide to the origin with each request.
+	URI string
+
+	// The subprotocols to advertise during WebSocket negotiation.
 	Subprotocols []string
-	Origin       Origin
-	Cluster      Cluster
-	Logger       logrus.FieldLogger
+
+	// Origin provides a means of sending messages to the origin server.
+	Origin Origin
+
+	// Cluster provides a means of sending messages to other nodes in the cluster.
+	Cluster Cluster
+
+	// The logger to use. If nil, the standard logger will be used.
+	Logger logrus.FieldLogger
 
 	initOnce sync.Once
 
-	localAddress []byte
+	address Address
 
 	connectionsMutex sync.Mutex
 	connections      map[string]*Connection
@@ -43,16 +53,11 @@ func (s *Service) init() {
 		if s.connectionIds == nil {
 			s.connectionIds = make(map[*Connection]Id)
 		}
-		s.localAddress = s.Cluster.Address()
+		if s.Logger == nil {
+			s.Logger = logrus.StandardLogger()
+		}
+		s.address = s.Cluster.Address()
 	})
-}
-
-func (s *Service) connectionLogger(connectionId Id) logrus.FieldLogger {
-	logger := s.Logger
-	if logger == nil {
-		logger = logrus.StandardLogger()
-	}
-	return logger.WithField("connection_id", connectionId)
 }
 
 func (s *Service) serveWebSocket(w http.ResponseWriter, r *http.Request) {
@@ -67,13 +72,13 @@ func (s *Service) serveWebSocket(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	id, err := NewId(s.localAddress)
+	id, err := NewId(s.address)
 	if err != nil {
 		http.Error(w, err.Error(), http.StatusInternalServerError)
 		return
 	}
 
-	logger := s.connectionLogger(id)
+	logger := s.Logger.WithField("connection_id", id)
 	logger.Info("connection established")
 
 	s.connectionsMutex.Lock()
@@ -82,7 +87,8 @@ func (s *Service) serveWebSocket(w http.ResponseWriter, r *http.Request) {
 	s.connectionIds[connection] = id
 	s.connectionsMutex.Unlock()
 
-	if _, err := s.Origin.ServeWebSocketService(&OriginRequest{
+	if err := s.Origin.SendOriginRequest(&OriginRequest{
+		ServiceURI: s.URI,
 		WebSocketEvent: &WebSocketEvent{
 			ConnectionId: id,
 			ConnectionEstablished: &WebSocketEventConnectionEstablished{
@@ -104,7 +110,8 @@ type serviceConnectionHandler struct {
 }
 
 func (h *serviceConnectionHandler) HandleWebSocketMessage(msg *WebSocketMessage) {
-	if _, err := h.s.Origin.ServeWebSocketService(&OriginRequest{
+	if err := h.s.Origin.SendOriginRequest(&OriginRequest{
+		ServiceURI: h.s.URI,
 		WebSocketEvent: &WebSocketEvent{
 			ConnectionId:    h.connectionId,
 			MessageReceived: msg,
@@ -172,4 +179,56 @@ func (s *Service) CloseConnection(id Id) error {
 	delete(s.connections, string(id))
 	delete(s.connectionIds, connection)
 	return nil
+}
+
+func (s *Service) HandleServiceRequest(r *ServiceRequest) {
+	s.init()
+
+	requestsToForward := map[string]*ServiceRequest{}
+
+	s.connectionsMutex.Lock()
+	for _, msg := range r.OutgoingWebSocketMessages {
+		preparedMessage, err := msg.Message.PreparedMessage()
+		if err != nil {
+			s.Logger.Warn(errors.Wrap(err, "invalid message in service request"))
+			continue
+		}
+		forwarded := map[string][]Id{}
+		for _, id := range msg.ConnectionIds {
+			if id.Address().Equal(s.address) {
+				if conn, ok := s.connections[string(id)]; ok {
+					conn.Send(preparedMessage)
+				}
+				continue
+			}
+			forwarded[string(id.Address())] = append(forwarded[string(id.Address())], id)
+		}
+		for address, ids := range forwarded {
+			forwardedRequest, ok := requestsToForward[address]
+			if !ok {
+				forwardedRequest = &ServiceRequest{}
+				requestsToForward[address] = forwardedRequest
+			}
+			forwardedRequest.OutgoingWebSocketMessages = append(forwardedRequest.OutgoingWebSocketMessages, &OutgoingWebSocketMessage{
+				ConnectionIds: ids,
+				Message:       msg.Message,
+			})
+		}
+	}
+	s.connectionsMutex.Unlock()
+
+	for address, request := range requestsToForward {
+		if err := s.Cluster.SendServiceRequest(Address(address), request); err != nil {
+			s.Logger.Warn(errors.Wrap(err, "unable to forward service request"))
+		}
+	}
+}
+
+type ServiceRequest struct {
+	OutgoingWebSocketMessages []*OutgoingWebSocketMessage
+}
+
+type OutgoingWebSocketMessage struct {
+	ConnectionIds []Id
+	Message       *WebSocketMessage
 }

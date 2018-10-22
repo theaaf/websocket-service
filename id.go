@@ -7,7 +7,7 @@ import (
 
 type Id []byte
 
-func NewId(address []byte) (Id, error) {
+func NewId(address Address) (Id, error) {
 	id := make([]byte, 21+len(address))
 	id[0] = 0
 	copy(id[1:], address)
@@ -17,11 +17,11 @@ func NewId(address []byte) (Id, error) {
 	return id, nil
 }
 
-func (id Id) Address() []byte {
+func (id Id) Address() Address {
 	if id[0] != 0 || len(id) < 21 {
 		return nil
 	}
-	return id[1 : len(id)-20]
+	return Address(id[1 : len(id)-20])
 }
 
 func (id Id) String() string {

@@ -1,4 +1,4 @@
-package websocketservice
+package websocketservice_test
 
 import (
 	"net"
@@ -10,9 +10,44 @@ import (
 	"github.com/pkg/errors"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
+
+	wss "github.aaf.cloud/platform/websocket-service"
+	"github.aaf.cloud/platform/websocket-service/cluster"
 )
 
-func newTestClient(t *testing.T, s *Service, subprotocols []string) *websocket.Conn {
+type TestOrigin struct {
+	t        *testing.T
+	handlers chan wss.OriginFunc
+}
+
+func (o *TestOrigin) SendOriginRequest(request *wss.OriginRequest) error {
+	o.t.Helper()
+	select {
+	case handler := <-o.handlers:
+		return handler(request)
+	case <-time.After(time.Second):
+		o.t.Fatal("received unexpected request")
+	}
+	return nil
+}
+
+func (o *TestOrigin) WaitForRequest(f wss.OriginFunc) {
+	o.t.Helper()
+	select {
+	case o.handlers <- f:
+	case <-time.After(time.Second):
+		o.t.Fatal("expected request")
+	}
+}
+
+func newTestOrigin(t *testing.T) *TestOrigin {
+	return &TestOrigin{
+		t:        t,
+		handlers: make(chan wss.OriginFunc),
+	}
+}
+
+func newTestClient(t *testing.T, s *wss.Service, subprotocols []string) *websocket.Conn {
 	l, err := net.Listen("tcp", "127.0.0.1:0")
 	require.NoError(t, err)
 	defer l.Close()
@@ -45,35 +80,106 @@ func newTestClient(t *testing.T, s *Service, subprotocols []string) *websocket.C
 func TestService(t *testing.T) {
 	origin := newTestOrigin(t)
 
-	s0 := &Service{
+	// Create a two-node cluster.
+	clusterA := cluster.NewMemoryCluster()
+	nodeA := &wss.Service{
 		Subprotocols: []string{"test"},
 		Origin:       origin,
-		Cluster:      NewMemoryCluster(),
+		Cluster:      clusterA,
 	}
-	client := newTestClient(t, s0, s0.Subprotocols)
+	clusterB := cluster.JoinMemoryCluster(clusterA)
+	nodeB := &wss.Service{
+		Subprotocols: []string{"test"},
+		Origin:       origin,
+		Cluster:      clusterB,
+	}
 
+	// Forward requests from clusters to their nodes.
+	stop := make(chan struct{})
+	go func() {
+		for {
+			select {
+			case r := <-clusterA.ServiceRequests():
+				nodeA.HandleServiceRequest(r)
+			case r := <-clusterB.ServiceRequests():
+				nodeB.HandleServiceRequest(r)
+			case <-stop:
+				return
+			}
+		}
+	}()
+	// Shut the nodes down when the test is over.
 	defer func() {
-		assert.NoError(t, client.Close())
-		assert.NoError(t, s0.Close())
+		close(stop)
+		assert.NoError(t, nodeA.Close())
+		assert.NoError(t, nodeB.Close())
 	}()
 
-	var connectionId Id
+	// Here's our WebSocket client.
+	client := newTestClient(t, nodeA, nodeA.Subprotocols)
+	defer func() {
+		assert.NoError(t, client.Close())
+	}()
 
-	origin.WaitForRequest(func(request *OriginRequest) (*OriginResponse, error) {
+	var connectionId wss.Id
+
+	// Wait for the origin to get the "connection established" message.
+	origin.WaitForRequest(func(request *wss.OriginRequest) error {
 		require.NotNil(t, request.WebSocketEvent)
 		assert.NotEmpty(t, request.WebSocketEvent.ConnectionId)
 		connectionId = request.WebSocketEvent.ConnectionId
 		require.NotNil(t, request.WebSocketEvent.ConnectionEstablished)
 		assert.Equal(t, "test", request.WebSocketEvent.ConnectionEstablished.Subprotocol)
-		return nil, nil
+		return nil
 	})
 
+	// Send a WebSocket message.
 	require.NoError(t, client.WriteMessage(websocket.TextMessage, []byte("foo")))
 
-	origin.WaitForRequest(func(request *OriginRequest) (*OriginResponse, error) {
+	// Wait for the origin to get that message.
+	origin.WaitForRequest(func(request *wss.OriginRequest) error {
 		require.NotNil(t, request.WebSocketEvent)
 		assert.Equal(t, connectionId, request.WebSocketEvent.ConnectionId)
 		assert.Equal(t, "foo", *request.WebSocketEvent.MessageReceived.Text)
-		return nil, nil
+		return nil
+	})
+
+	// Send a WebSocket message back to the client.
+	responseText := "bar"
+	nodeA.HandleServiceRequest(&wss.ServiceRequest{
+		OutgoingWebSocketMessages: []*wss.OutgoingWebSocketMessage{
+			{
+				ConnectionIds: []wss.Id{connectionId},
+				Message: &wss.WebSocketMessage{
+					Text: &responseText,
+				},
+			},
+		},
+	})
+
+	// Wait for the client to get that message.
+	messageType, message, err := client.ReadMessage()
+	require.NoError(t, err)
+	assert.Equal(t, websocket.TextMessage, messageType)
+	assert.Equal(t, "bar", string(message))
+
+	// Now try sending a message to the client again, but through a different cluster node.
+	t.Run("CrossNode", func(t *testing.T) {
+		messageText := "baz"
+		nodeB.HandleServiceRequest(&wss.ServiceRequest{
+			OutgoingWebSocketMessages: []*wss.OutgoingWebSocketMessage{
+				{
+					ConnectionIds: []wss.Id{connectionId},
+					Message: &wss.WebSocketMessage{
+						Text: &messageText,
+					},
+				},
+			},
+		})
+
+		messageType, message, err := client.ReadMessage()
+		require.NoError(t, err)
+		assert.Equal(t, websocket.TextMessage, messageType)
+		assert.Equal(t, "baz", string(message))
 	})
 }

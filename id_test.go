@@ -8,7 +8,7 @@ import (
 )
 
 func TestNewId(t *testing.T) {
-	id, err := NewId([]byte("foo"))
+	id, err := NewId(Address("foo"))
 	require.NoError(t, err)
-	assert.Equal(t, []byte("foo"), id.Address())
+	assert.Equal(t, Address("foo"), id.Address())
 }
