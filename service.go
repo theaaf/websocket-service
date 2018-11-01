@@ -3,6 +3,7 @@ package websocketservice
 import (
 	"net/http"
 	"sync"
+	"time"
 
 	"github.com/gorilla/websocket"
 	"github.com/hashicorp/go-multierror"
@@ -23,6 +24,11 @@ type Service struct {
 	// Cluster provides a means of sending messages to other nodes in the cluster.
 	Cluster Cluster
 
+	// If non-zero, the origin will receive keep-alive events for WebSocket connections. These
+	// events don't represent any actual WebSockett activity, but indicate that the connection is
+	// still alive and healthy.
+	KeepAliveInterval time.Duration
+
 	// The logger to use. If nil, the standard logger will be used.
 	Logger logrus.FieldLogger
 
@@ -32,7 +38,7 @@ type Service struct {
 
 	connectionsMutex sync.Mutex
 	connections      map[string]*Connection
-	connectionIds    map[*Connection]Id
+	connectionIds    map[*Connection]ConnectionId
 }
 
 func (s *Service) ServeHTTP(w http.ResponseWriter, r *http.Request) {
@@ -51,7 +57,7 @@ func (s *Service) init() {
 			s.connections = make(map[string]*Connection)
 		}
 		if s.connectionIds == nil {
-			s.connectionIds = make(map[*Connection]Id)
+			s.connectionIds = make(map[*Connection]ConnectionId)
 		}
 		if s.Logger == nil {
 			s.Logger = logrus.StandardLogger()
@@ -72,7 +78,7 @@ func (s *Service) serveWebSocket(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	id, err := NewId(s.address)
+	id, err := NewConnectionId(s.address)
 	if err != nil {
 		http.Error(w, err.Error(), http.StatusInternalServerError)
 		return
@@ -82,7 +88,7 @@ func (s *Service) serveWebSocket(w http.ResponseWriter, r *http.Request) {
 	logger.Info("connection established")
 
 	s.connectionsMutex.Lock()
-	connection := NewConnection(conn, logger, s.connectionHandler(id, logger))
+	connection := NewConnection(conn, logger, s.connectionHandler(id, logger), s.KeepAliveInterval)
 	s.connections[string(id)] = connection
 	s.connectionIds[connection] = id
 	s.connectionsMutex.Unlock()
@@ -105,8 +111,20 @@ func (s *Service) serveWebSocket(w http.ResponseWriter, r *http.Request) {
 
 type serviceConnectionHandler struct {
 	s            *Service
-	connectionId Id
+	connectionId ConnectionId
 	logger       logrus.FieldLogger
+}
+
+func (h *serviceConnectionHandler) KeepAlive() {
+	if err := h.s.Origin.SendOriginRequest(&OriginRequest{
+		ServiceURI: h.s.URI,
+		WebSocketEvent: &WebSocketEvent{
+			ConnectionId: h.connectionId,
+			KeepAlive:    &WebSocketKeepAlive{},
+		},
+	}); err != nil {
+		h.logger.Warn(errors.Wrap(err, "origin error on websocket keep-alive"))
+	}
 }
 
 func (h *serviceConnectionHandler) HandleWebSocketMessage(msg *WebSocketMessage) {
@@ -122,7 +140,7 @@ func (h *serviceConnectionHandler) HandleWebSocketMessage(msg *WebSocketMessage)
 	}
 }
 
-func (s *Service) connectionHandler(connectionId Id, logger logrus.FieldLogger) ConnectionHandler {
+func (s *Service) connectionHandler(connectionId ConnectionId, logger logrus.FieldLogger) ConnectionHandler {
 	return &serviceConnectionHandler{
 		s:            s,
 		connectionId: connectionId,
@@ -160,7 +178,7 @@ func (s *Service) Close() error {
 	}
 }
 
-func (s *Service) CloseConnection(id Id) error {
+func (s *Service) CloseConnection(id ConnectionId) error {
 	s.init()
 
 	s.connectionsMutex.Lock()
@@ -193,7 +211,7 @@ func (s *Service) HandleServiceRequest(r *ServiceRequest) {
 			s.Logger.Warn(errors.Wrap(err, "invalid message in service request"))
 			continue
 		}
-		forwarded := map[string][]Id{}
+		forwarded := map[string][]ConnectionId{}
 		for _, id := range msg.ConnectionIds {
 			if id.Address().Equal(s.address) {
 				if conn, ok := s.connections[string(id)]; ok {
@@ -229,6 +247,6 @@ type ServiceRequest struct {
 }
 
 type OutgoingWebSocketMessage struct {
-	ConnectionIds []Id
+	ConnectionIds []ConnectionId
 	Message       *WebSocketMessage
 }

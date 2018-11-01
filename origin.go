@@ -17,7 +17,8 @@ func (f OriginFunc) SendOriginRequest(r *OriginRequest) error {
 }
 
 type OriginRequest struct {
-	ServiceURI     string
+	ServiceURI string
+
 	WebSocketEvent *WebSocketEvent
 }
 
@@ -26,10 +27,14 @@ type WebSocketEventConnectionEstablished struct {
 }
 
 type WebSocketEvent struct {
-	ConnectionId Id
+	ConnectionId ConnectionId
 
 	ConnectionEstablished *WebSocketEventConnectionEstablished
 	MessageReceived       *WebSocketMessage
+
+	// The service will periodically send keep-alive events, which don't represent actual websocket
+	// events, but just let you know the connection is still alive and well.
+	KeepAlive *WebSocketKeepAlive
 }
 
 type WebSocketMessage struct {
@@ -45,3 +50,5 @@ func (msg *WebSocketMessage) PreparedMessage() (*websocket.PreparedMessage, erro
 	}
 	return nil, fmt.Errorf("invalid websocket message")
 }
+
+type WebSocketKeepAlive struct{}

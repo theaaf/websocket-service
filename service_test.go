@@ -121,7 +121,7 @@ func TestService(t *testing.T) {
 		assert.NoError(t, client.Close())
 	}()
 
-	var connectionId wss.Id
+	var connectionId wss.ConnectionId
 
 	// Wait for the origin to get the "connection established" message.
 	origin.WaitForRequest(func(request *wss.OriginRequest) error {
@@ -149,7 +149,7 @@ func TestService(t *testing.T) {
 	nodeA.HandleServiceRequest(&wss.ServiceRequest{
 		OutgoingWebSocketMessages: []*wss.OutgoingWebSocketMessage{
 			{
-				ConnectionIds: []wss.Id{connectionId},
+				ConnectionIds: []wss.ConnectionId{connectionId},
 				Message: &wss.WebSocketMessage{
 					Text: &responseText,
 				},
@@ -169,7 +169,7 @@ func TestService(t *testing.T) {
 		nodeB.HandleServiceRequest(&wss.ServiceRequest{
 			OutgoingWebSocketMessages: []*wss.OutgoingWebSocketMessage{
 				{
-					ConnectionIds: []wss.Id{connectionId},
+					ConnectionIds: []wss.ConnectionId{connectionId},
 					Message: &wss.WebSocketMessage{
 						Text: &messageText,
 					},
@@ -181,5 +181,62 @@ func TestService(t *testing.T) {
 		require.NoError(t, err)
 		assert.Equal(t, websocket.TextMessage, messageType)
 		assert.Equal(t, "baz", string(message))
+	})
+}
+
+func TestService_KeepAliveInterval(t *testing.T) {
+	origin := newTestOrigin(t)
+
+	// Create a cluster.
+	cluster := cluster.NewMemoryCluster()
+	node := &wss.Service{
+		Subprotocols:      []string{"test"},
+		Origin:            origin,
+		Cluster:           cluster,
+		KeepAliveInterval: 500 * time.Millisecond,
+	}
+
+	// Forward requests from clusters to their nodes.
+	stop := make(chan struct{})
+	go func() {
+		for {
+			select {
+			case r := <-cluster.ServiceRequests():
+				node.HandleServiceRequest(r)
+			case <-stop:
+				return
+			}
+		}
+	}()
+	// Shut the nodes down when the test is over.
+	defer func() {
+		close(stop)
+		assert.NoError(t, node.Close())
+	}()
+
+	// Here's our WebSocket client.
+	client := newTestClient(t, node, node.Subprotocols)
+	defer func() {
+		assert.NoError(t, client.Close())
+	}()
+
+	var connectionId wss.ConnectionId
+
+	// Wait for the origin to get the "connection established" message.
+	origin.WaitForRequest(func(request *wss.OriginRequest) error {
+		require.NotNil(t, request.WebSocketEvent)
+		assert.NotEmpty(t, request.WebSocketEvent.ConnectionId)
+		connectionId = request.WebSocketEvent.ConnectionId
+		require.NotNil(t, request.WebSocketEvent.ConnectionEstablished)
+		assert.Equal(t, "test", request.WebSocketEvent.ConnectionEstablished.Subprotocol)
+		return nil
+	})
+
+	// Wait for the origin to get a keep-alive.
+	origin.WaitForRequest(func(request *wss.OriginRequest) error {
+		require.NotNil(t, request.WebSocketEvent)
+		assert.Equal(t, connectionId, request.WebSocketEvent.ConnectionId)
+		assert.NotNil(t, *request.WebSocketEvent.KeepAlive)
+		return nil
 	})
 }
