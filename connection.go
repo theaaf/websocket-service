@@ -12,9 +12,14 @@ import (
 
 type ConnectionId []byte
 
+const (
+	connectionIdVersion0    = 0
+	connectionIdRandomBytes = 20
+)
+
 func NewConnectionId(address Address) (ConnectionId, error) {
-	id := make([]byte, 21+len(address))
-	id[0] = 0
+	id := make([]byte, 1+len(address)+connectionIdRandomBytes)
+	id[0] = connectionIdVersion0
 	copy(id[1:], address)
 	if _, err := rand.Read(id[1+len(address):]); err != nil {
 		return nil, err
@@ -23,10 +28,10 @@ func NewConnectionId(address Address) (ConnectionId, error) {
 }
 
 func (id ConnectionId) Address() Address {
-	if id[0] != 0 || len(id) < 21 {
+	if id[0] != connectionIdVersion0 || len(id) < 1+connectionIdRandomBytes {
 		return nil
 	}
-	return Address(id[1 : len(id)-20])
+	return Address(id[1 : len(id)-connectionIdRandomBytes])
 }
 
 func (id ConnectionId) String() string {
@@ -52,13 +57,15 @@ type ConnectionHandler interface {
 	HandleWebSocketMessage(msg *WebSocketMessage)
 }
 
+const connectionSendBufferSize = 100
+
 func NewConnection(conn *websocket.Conn, logger logrus.FieldLogger, handler ConnectionHandler, keepAliveInterval time.Duration) *Connection {
 	ret := &Connection{
 		conn:              conn,
 		logger:            logger,
 		readLoopDone:      make(chan struct{}),
 		writeLoopDone:     make(chan struct{}),
-		outgoing:          make(chan *websocket.PreparedMessage, 10),
+		outgoing:          make(chan *websocket.PreparedMessage, connectionSendBufferSize),
 		closing:           make(chan struct{}),
 		handler:           handler,
 		keepAliveInterval: keepAliveInterval,
