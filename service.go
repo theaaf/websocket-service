@@ -12,9 +12,6 @@ import (
 )
 
 type Service struct {
-	// The URI to provide to the origin with each request.
-	URI string
-
 	// The subprotocols to advertise during WebSocket negotiation.
 	Subprotocols []string
 
@@ -94,7 +91,6 @@ func (s *Service) serveWebSocket(w http.ResponseWriter, r *http.Request) {
 	s.connectionsMutex.Unlock()
 
 	if err := s.Origin.SendOriginRequest(&OriginRequest{
-		ServiceURI: s.URI,
 		WebSocketEvent: &WebSocketEvent{
 			ConnectionId: id,
 			ConnectionEstablished: &WebSocketEventConnectionEstablished{
@@ -117,7 +113,6 @@ type serviceConnectionHandler struct {
 
 func (h *serviceConnectionHandler) KeepAlive() {
 	if err := h.s.Origin.SendOriginRequest(&OriginRequest{
-		ServiceURI: h.s.URI,
 		WebSocketEvent: &WebSocketEvent{
 			ConnectionId: h.connectionId,
 			KeepAlive:    &WebSocketKeepAlive{},
@@ -129,7 +124,6 @@ func (h *serviceConnectionHandler) KeepAlive() {
 
 func (h *serviceConnectionHandler) HandleWebSocketMessage(msg *WebSocketMessage) {
 	if err := h.s.Origin.SendOriginRequest(&OriginRequest{
-		ServiceURI: h.s.URI,
 		WebSocketEvent: &WebSocketEvent{
 			ConnectionId:    h.connectionId,
 			MessageReceived: msg,

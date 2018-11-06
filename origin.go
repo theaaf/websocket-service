@@ -17,8 +17,6 @@ func (f OriginFunc) SendOriginRequest(r *OriginRequest) error {
 }
 
 type OriginRequest struct {
-	ServiceURI string
-
 	WebSocketEvent *WebSocketEvent
 }
 

@@ -3,6 +3,7 @@ package websocketservice
 import (
 	"crypto/rand"
 	"encoding/base64"
+	"sync"
 	"time"
 
 	"github.com/gorilla/websocket"
@@ -47,6 +48,7 @@ type Connection struct {
 	closing           chan struct{}
 	handler           ConnectionHandler
 	keepAliveInterval time.Duration
+	closeOnce         sync.Once
 }
 
 type ConnectionHandler interface {
@@ -84,8 +86,10 @@ func (c *Connection) Send(msg *websocket.PreparedMessage) {
 }
 
 func (c *Connection) Close() error {
-	close(c.outgoing)
-	close(c.closing)
+	c.closeOnce.Do(func() {
+		close(c.outgoing)
+		close(c.closing)
+	})
 	<-c.readLoopDone
 	<-c.writeLoopDone
 	return nil
