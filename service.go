@@ -65,8 +65,9 @@ func (s *Service) init() {
 
 func (s *Service) serveWebSocket(w http.ResponseWriter, r *http.Request) {
 	var upgrader = websocket.Upgrader{
-		CheckOrigin:  func(r *http.Request) bool { return true },
-		Subprotocols: s.Subprotocols,
+		CheckOrigin:       func(r *http.Request) bool { return true },
+		EnableCompression: true,
+		Subprotocols:      s.Subprotocols,
 	}
 
 	conn, err := upgrader.Upgrade(w, r, nil)
@@ -81,10 +82,9 @@ func (s *Service) serveWebSocket(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	logger := s.Logger.WithField("connection_id", id)
-	logger.Info("connection established")
-
 	s.connectionsMutex.Lock()
+	logger := s.Logger.WithField("connection_id", id)
+	logger.WithField("connection_count", len(s.connections)+1).Info("connection established")
 	connection := NewConnection(conn, logger, s.connectionHandler(id, logger), s.KeepAliveInterval)
 	s.connections[string(id)] = connection
 	s.connectionIds[connection] = id
@@ -99,7 +99,7 @@ func (s *Service) serveWebSocket(w http.ResponseWriter, r *http.Request) {
 		},
 	}); err != nil {
 		logger.Warn(errors.Wrap(err, "origin error on websocket connection establishment"))
-		s.CloseConnection(id)
+		s.closeConnection(id)
 	}
 
 	return
@@ -130,8 +130,12 @@ func (h *serviceConnectionHandler) HandleWebSocketMessage(msg *WebSocketMessage)
 		},
 	}); err != nil {
 		h.logger.Warn(errors.Wrap(err, "origin error on websocket message"))
-		h.s.CloseConnection(h.connectionId)
+		h.s.closeConnection(h.connectionId)
 	}
+}
+
+func (h *serviceConnectionHandler) HandleClose() {
+	h.s.CloseConnection(h.connectionId)
 }
 
 func (s *Service) connectionHandler(connectionId ConnectionId, logger logrus.FieldLogger) ConnectionHandler {
@@ -172,25 +176,54 @@ func (s *Service) Close() error {
 	}
 }
 
+func (s *Service) ConnectionCount() int {
+	s.connectionsMutex.Lock()
+	defer s.connectionsMutex.Unlock()
+	return len(s.connections)
+}
+
 func (s *Service) CloseConnection(id ConnectionId) error {
+	if didClose, err := s.closeConnection(id); err != nil {
+		return err
+	} else if didClose {
+		if err := s.Origin.SendOriginRequest(&OriginRequest{
+			WebSocketEvent: &WebSocketEvent{
+				ConnectionId:     id,
+				ConnectionClosed: &WebSocketEventConnectionClosed{},
+			},
+		}); err != nil {
+			s.Logger.WithField("connection_id", id).Warn(errors.Wrap(err, "origin error on websocket connection closed"))
+		}
+	}
+	return nil
+}
+
+func (s *Service) closeConnection(id ConnectionId) (bool, error) {
 	s.init()
 
 	s.connectionsMutex.Lock()
 	connection, ok := s.connections[string(id)]
 	s.connectionsMutex.Unlock()
 	if !ok {
-		return nil
+		return false, nil
 	}
 
 	if err := connection.Close(); err != nil {
-		return err
+		return false, err
 	}
 
 	s.connectionsMutex.Lock()
 	defer s.connectionsMutex.Unlock()
-	delete(s.connections, string(id))
-	delete(s.connectionIds, connection)
-	return nil
+	if connection, ok := s.connections[string(id)]; ok {
+		delete(s.connections, string(id))
+		delete(s.connectionIds, connection)
+		s.Logger.WithFields(logrus.Fields{
+			"connection_count": len(s.connections),
+			"connection_id":    id,
+		}).Info("connection closed")
+		return true, nil
+	}
+	return false, nil
 }
 
 func (s *Service) HandleServiceRequest(r *ServiceRequest) {
