@@ -24,10 +24,13 @@ type WebSocketEventConnectionEstablished struct {
 	Subprotocol string
 }
 
+type WebSocketEventConnectionClosed struct{}
+
 type WebSocketEvent struct {
 	ConnectionId ConnectionId
 
 	ConnectionEstablished *WebSocketEventConnectionEstablished
+	ConnectionClosed      *WebSocketEventConnectionClosed
 	MessageReceived       *WebSocketMessage
 
 	// The service will periodically send keep-alive events, which don't represent actual websocket

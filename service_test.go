@@ -16,34 +16,50 @@ import (
 )
 
 type TestOrigin struct {
-	t        *testing.T
-	handlers chan wss.OriginFunc
+	t              *testing.T
+	handlers       chan wss.OriginFunc
+	requestHandled chan struct{}
 }
 
 func (o *TestOrigin) SendOriginRequest(request *wss.OriginRequest) error {
 	o.t.Helper()
+
 	select {
 	case handler := <-o.handlers:
-		return handler(request)
-	case <-time.After(time.Second):
+		ret := handler(request)
+		o.requestHandled <- struct{}{}
+		return ret
+	case <-time.After(2 * time.Second):
 		o.t.Fatal("received unexpected request")
 	}
 	return nil
+}
+
+func (o *TestOrigin) WaitForClose(connectionId wss.ConnectionId) {
+	o.t.Helper()
+	o.WaitForRequest(func(request *wss.OriginRequest) error {
+		require.NotNil(o.t, request.WebSocketEvent)
+		assert.Equal(o.t, connectionId, request.WebSocketEvent.ConnectionId)
+		require.NotNil(o.t, request.WebSocketEvent.ConnectionClosed)
+		return nil
+	})
 }
 
 func (o *TestOrigin) WaitForRequest(f wss.OriginFunc) {
 	o.t.Helper()
 	select {
 	case o.handlers <- f:
-	case <-time.After(time.Second):
+		<-o.requestHandled
+	case <-time.After(2 * time.Second):
 		o.t.Fatal("expected request")
 	}
 }
 
 func newTestOrigin(t *testing.T) *TestOrigin {
 	return &TestOrigin{
-		t:        t,
-		handlers: make(chan wss.OriginFunc),
+		t:              t,
+		handlers:       make(chan wss.OriginFunc),
+		requestHandled: make(chan struct{}, 1),
 	}
 }
 
@@ -115,13 +131,14 @@ func TestService(t *testing.T) {
 		assert.NoError(t, nodeB.Close())
 	}()
 
+	var connectionId wss.ConnectionId
+
 	// Here's our WebSocket client.
 	client := newTestClient(t, nodeA, nodeA.Subprotocols)
 	defer func() {
 		assert.NoError(t, client.Close())
+		origin.WaitForClose(connectionId)
 	}()
-
-	var connectionId wss.ConnectionId
 
 	// Wait for the origin to get the "connection established" message.
 	origin.WaitForRequest(func(request *wss.OriginRequest) error {
@@ -214,13 +231,14 @@ func TestService_KeepAliveInterval(t *testing.T) {
 		assert.NoError(t, node.Close())
 	}()
 
+	var connectionId wss.ConnectionId
+
 	// Here's our WebSocket client.
 	client := newTestClient(t, node, node.Subprotocols)
 	defer func() {
 		assert.NoError(t, client.Close())
+		origin.WaitForClose(connectionId)
 	}()
-
-	var connectionId wss.ConnectionId
 
 	// Wait for the origin to get the "connection established" message.
 	origin.WaitForRequest(func(request *wss.OriginRequest) error {
@@ -239,4 +257,64 @@ func TestService_KeepAliveInterval(t *testing.T) {
 		assert.NotNil(t, *request.WebSocketEvent.KeepAlive)
 		return nil
 	})
+}
+
+func TestService_Close(t *testing.T) {
+	origin := newTestOrigin(t)
+
+	// Create a cluster.
+	cluster := cluster.NewMemoryCluster()
+	node := &wss.Service{
+		Subprotocols: []string{"test"},
+		Origin:       origin,
+		Cluster:      cluster,
+	}
+
+	// Forward requests from clusters to their nodes.
+	stop := make(chan struct{})
+	go func() {
+		for {
+			select {
+			case r := <-cluster.ServiceRequests():
+				node.HandleServiceRequest(r)
+			case <-stop:
+				return
+			}
+		}
+	}()
+	// Shut the nodes down when the test is over.
+	defer func() {
+		close(stop)
+		assert.NoError(t, node.Close())
+	}()
+
+	// Here's our WebSocket client.
+	client := newTestClient(t, node, node.Subprotocols)
+	defer func() {
+		if client != nil {
+			assert.NoError(t, client.Close())
+		}
+	}()
+
+	var connectionId wss.ConnectionId
+
+	// Wait for the origin to get the "connection established" message.
+	origin.WaitForRequest(func(request *wss.OriginRequest) error {
+		require.NotNil(t, request.WebSocketEvent)
+		assert.NotEmpty(t, request.WebSocketEvent.ConnectionId)
+		connectionId = request.WebSocketEvent.ConnectionId
+		require.NotNil(t, request.WebSocketEvent.ConnectionEstablished)
+		assert.Equal(t, "test", request.WebSocketEvent.ConnectionEstablished.Subprotocol)
+		return nil
+	})
+
+	assert.Equal(t, 1, node.ConnectionCount())
+
+	// Close the connection.
+	assert.NoError(t, client.Close())
+	client = nil
+
+	origin.WaitForClose(connectionId)
+
+	assert.Equal(t, 0, node.ConnectionCount())
 }

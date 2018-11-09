@@ -45,10 +45,11 @@ type Connection struct {
 	readLoopDone      chan struct{}
 	writeLoopDone     chan struct{}
 	outgoing          chan *websocket.PreparedMessage
-	closing           chan struct{}
 	handler           ConnectionHandler
 	keepAliveInterval time.Duration
-	closeOnce         sync.Once
+	close             chan struct{}
+	beginClosingOnce  sync.Once
+	finishClosingOnce sync.Once
 }
 
 type ConnectionHandler interface {
@@ -57,6 +58,8 @@ type ConnectionHandler interface {
 	KeepAlive()
 
 	HandleWebSocketMessage(msg *WebSocketMessage)
+
+	HandleClose()
 }
 
 const connectionSendBufferSize = 100
@@ -68,7 +71,7 @@ func NewConnection(conn *websocket.Conn, logger logrus.FieldLogger, handler Conn
 		readLoopDone:      make(chan struct{}),
 		writeLoopDone:     make(chan struct{}),
 		outgoing:          make(chan *websocket.PreparedMessage, connectionSendBufferSize),
-		closing:           make(chan struct{}),
+		close:             make(chan struct{}),
 		handler:           handler,
 		keepAliveInterval: keepAliveInterval,
 	}
@@ -86,24 +89,21 @@ func (c *Connection) Send(msg *websocket.PreparedMessage) {
 }
 
 func (c *Connection) Close() error {
-	c.closeOnce.Do(func() {
-		close(c.outgoing)
-		close(c.closing)
-	})
-	<-c.readLoopDone
-	<-c.writeLoopDone
+	c.beginClosing()
+	c.finishClosing()
 	return nil
 }
 
 func (c *Connection) readLoop() {
 	defer close(c.readLoopDone)
+	defer c.beginClosing()
 
 	for {
 		messageType, p, err := c.conn.ReadMessage()
 		if err != nil {
 			if !websocket.IsCloseError(err, websocket.CloseAbnormalClosure, websocket.CloseGoingAway) {
 				select {
-				case <-c.closing:
+				case <-c.close:
 				default:
 					c.logger.Error(errors.Wrap(err, "websocket read error"))
 				}
@@ -125,6 +125,7 @@ func (c *Connection) readLoop() {
 }
 
 func (c *Connection) writeLoop() {
+	defer c.finishClosing()
 	defer close(c.writeLoopDone)
 
 	defer c.conn.Close()
@@ -152,8 +153,28 @@ func (c *Connection) writeLoop() {
 				}
 				break
 			}
+		case <-c.close:
+			return
 		case <-tick:
 			c.handler.KeepAlive()
 		}
+	}
+}
+
+func (c *Connection) beginClosing() {
+	c.beginClosingOnce.Do(func() {
+		close(c.close)
+	})
+}
+
+func (c *Connection) finishClosing() {
+	<-c.readLoopDone
+	<-c.writeLoopDone
+	invokeHandler := false
+	c.finishClosingOnce.Do(func() {
+		invokeHandler = true
+	})
+	if invokeHandler {
+		c.handler.HandleClose()
 	}
 }
