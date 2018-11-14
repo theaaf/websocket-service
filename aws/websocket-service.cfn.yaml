@@ -1,0 +1,440 @@
+Description: github.aaf.cloud/platform/websocket-service
+Parameters:
+  ECSOptimizedAMI:
+    Type: AWS::SSM::Parameter::Value<String>
+    Default: /aws/service/ecs/optimized-ami/amazon-linux/amzn-ami-2017.09.l-amazon-ecs-optimized
+  Image:
+    Type: String
+  InstanceCount:
+    Type: Number
+    Default: 2
+    # More than 100 instances would require making WebsocketTargetGroupPeriodicLambdaFunction more robust.
+    MaxValue: 100
+  OriginURL:
+    Type: String
+  Subnets:
+    Description: The subnets to place the service in. These should generally be private subnets.
+    Type: List<AWS::EC2::Subnet::Id>
+  VPC:
+    Type: AWS::EC2::VPC::Id
+Outputs:
+  OriginSecurityGroup:
+    Value: !Ref OriginSecurityGroup
+    Export:
+      Name: !Sub '${AWS::StackName}-OriginSecurityGroup'
+  SecurityGroup:
+    Value: !Ref SecurityGroup
+    Export:
+      Name: !Sub '${AWS::StackName}-SecurityGroup'
+  ServiceURL:
+    Value: !Sub http://${ServiceRequestLoadBalancer.DNSName}/sr
+    Export:
+      Name: !Sub '${AWS::StackName}-ServiceURL'
+  WebsocketTargetGroup:
+    Value: !Ref WebsocketTargetGroup
+    Export:
+      Name: !Sub '${AWS::StackName}-WebsocketTargetGroup'
+Resources:
+  AutoScalingGroup:
+    Type: AWS::AutoScaling::AutoScalingGroup
+    CreationPolicy:
+      ResourceSignal:
+        Count: !Ref InstanceCount
+        Timeout: PT10M
+    UpdatePolicy:
+      AutoScalingRollingUpdate:
+        PauseTime: PT10M
+        SuspendProcesses:
+          - HealthCheck
+          - ReplaceUnhealthy
+          - AZRebalance
+          - AlarmNotification
+          - ScheduledActions
+        WaitOnResourceSignals: true
+    Properties:
+      LaunchConfigurationName: !Ref LaunchConfiguration
+      MaxSize: !Ref InstanceCount
+      MinSize: !Ref InstanceCount
+      Tags:
+        - Key: Name
+          Value: !Ref AWS::StackName
+          PropagateAtLaunch: true
+      VPCZoneIdentifier: !Ref Subnets
+  BasicLambdaRole:
+    Type: AWS::IAM::Role
+    Properties:
+      AssumeRolePolicyDocument:
+        Version: 2012-10-17
+        Statement:
+          - Effect: Allow
+            Principal:
+              Service: lambda.amazonaws.com
+            Action: sts:AssumeRole
+      ManagedPolicyArns:
+        - arn:aws:iam::aws:policy/service-role/AWSLambdaBasicExecutionRole
+  ECSCluster:
+    Type: AWS::ECS::Cluster
+  ECSOptimizedAMIMetadata:
+    Type: AWS::CloudFormation::CustomResource
+    Properties:
+      ServiceToken: !GetAtt ECSOptimizedAMIJSONParser.Arn
+      Json: !Ref ECSOptimizedAMI
+  ECSOptimizedAMIJSONParser:
+    Type: AWS::Lambda::Function
+    Properties:
+      Code:
+        ZipFile: !Sub |
+          import cfnresponse
+          import json
+          import uuid
+
+          def handler(event, context):
+            print(event)
+
+            try:
+              if event['RequestType'] == 'Create' or event['RequestType'] == 'Update':
+                data = json.loads(event['ResourceProperties']['Json'])
+                cfnresponse.send(event, context, cfnresponse.SUCCESS, {
+                  'ImageId': data['image_id'],
+                }, str(uuid.uuid4()))
+              elif event['RequestType'] == 'Delete':
+                cfnresponse.send(event, context, cfnresponse.SUCCESS, {}, event['PhysicalResourceId'])
+              else:
+                cfnresponse.send(event, context, cfnresponse.FAILED, {})
+            except:
+              cfnresponse.send(event, context, cfnresponse.FAILED, {})
+              raise
+      Handler: index.handler
+      Role: !GetAtt BasicLambdaRole.Arn
+      Runtime: python3.6
+      Timeout: 15
+  ECSService:
+    Type: AWS::ECS::Service
+    DependsOn: ServiceRequestListener
+    Properties:
+      Cluster: !Ref ECSCluster
+      DeploymentConfiguration:
+        MaximumPercent: 100
+        MinimumHealthyPercent: 50
+      LoadBalancers:
+        - ContainerName: websocket-service
+          ContainerPort: 8081
+          TargetGroupArn: !Ref ServiceRequestTargetGroup
+      NetworkConfiguration:
+        AwsvpcConfiguration:
+          SecurityGroups:
+            - !Ref SecurityGroup
+          Subnets: !Ref Subnets
+      SchedulingStrategy: DAEMON
+      ServiceName: !Sub ${AWS::StackName}
+      TaskDefinition: !Ref TaskDefinition
+  InstanceProfile:
+    Type: AWS::IAM::InstanceProfile
+    Properties:
+      Roles:
+        - !Ref InstanceRole
+  InstanceRole:
+    Type: AWS::IAM::Role
+    Properties:
+      AssumeRolePolicyDocument:
+        Version: 2012-10-17
+        Statement:
+          - Effect: Allow
+            Principal: 
+              Service: ec2.amazonaws.com
+            Action: sts:AssumeRole
+      ManagedPolicyArns:
+        - arn:aws:iam::aws:policy/service-role/AmazonEC2RoleforSSM
+        - arn:aws:iam::aws:policy/service-role/AmazonEC2ContainerServiceforEC2Role
+  InstanceSecurityGroup:
+    Type: AWS::EC2::SecurityGroup
+    Properties:
+      GroupDescription: instance
+      VpcId: !Ref VPC
+  LaunchConfiguration:
+    Type: AWS::AutoScaling::LaunchConfiguration
+    Properties:
+      AssociatePublicIpAddress: false
+      ImageId: !GetAtt ECSOptimizedAMIMetadata.ImageId
+      IamInstanceProfile: !Ref InstanceProfile
+      InstanceType: c4.large
+      SecurityGroups:
+        - !Ref InstanceSecurityGroup
+      UserData:
+        Fn::Base64: !Sub |
+          #!/bin/bash -ex
+          yum install -y https://s3.amazonaws.com/ec2-downloads-windows/SSMAgent/latest/linux_amd64/amazon-ssm-agent.rpm
+          yum install -y aws-cfn-bootstrap
+          echo ECS_CLUSTER=${ECSCluster} >> /etc/ecs/ecs.config
+          /opt/aws/bin/cfn-signal -e $? --region ${AWS::Region} --stack ${AWS::StackName} --resource AutoScalingGroup
+  LogGroup:
+    Type: AWS::Logs::LogGroup
+  OriginSecurityGroup:
+    Type: AWS::EC2::SecurityGroup
+    Properties:
+      GroupDescription: origin
+      VpcId: !Ref VPC
+  SecurityGroup:
+    Type: AWS::EC2::SecurityGroup
+    Properties:
+      GroupDescription: websocket-service
+      SecurityGroupIngress:
+        - FromPort: 8081
+          IpProtocol: tcp
+          SourceSecurityGroupId: !Ref ServiceRequestLoadBalancerSecurityGroup
+          ToPort: 8081
+      VpcId: !Ref VPC
+  SecurityGroupSelfServiceRequestIngress:
+    Type: AWS::EC2::SecurityGroupIngress
+    Properties:
+      GroupId: !Ref SecurityGroup
+      FromPort: 8081
+      IpProtocol: tcp
+      SourceSecurityGroupId: !Ref SecurityGroup
+      ToPort: 8081
+  TaskDefinition:
+    Type: AWS::ECS::TaskDefinition
+    Properties:
+      ContainerDefinitions:
+        - Command:
+            - --service-request-port
+            - '8081'
+            - --websocket-port
+            - '8080'
+            - --origin-url
+            - !Ref OriginURL
+          Image: !Ref Image
+          LogConfiguration:
+            LogDriver: awslogs
+            Options:
+              awslogs-group: !Ref LogGroup
+              awslogs-region: !Ref AWS::Region
+              awslogs-stream-prefix: !Ref AWS::StackName
+          MemoryReservation: 500
+          Name: websocket-service
+          PortMappings:
+            - ContainerPort: 8080
+              HostPort: 8080
+            - ContainerPort: 8081
+              HostPort: 8081
+          Ulimits:
+            - HardLimit: 4096
+              Name: nofile
+              SoftLimit: 4096
+      Family: !Sub '${AWS::StackName}-websocket-service'
+      NetworkMode: awsvpc
+  ServiceRequestLoadBalancer:
+    Type: AWS::ElasticLoadBalancingV2::LoadBalancer
+    Properties:
+      Scheme: internal
+      SecurityGroups:
+        - !Ref ServiceRequestLoadBalancerSecurityGroup
+      Subnets: !Ref Subnets
+  ServiceRequestLoadBalancerSecurityGroup:
+    Type: AWS::EC2::SecurityGroup
+    Properties:
+      GroupDescription: service-request
+      SecurityGroupIngress:
+        - FromPort: 80
+          IpProtocol: tcp
+          SourceSecurityGroupId: !Ref OriginSecurityGroup
+          ToPort: 80
+      VpcId: !Ref VPC
+  ServiceRequestListener:
+    Type: AWS::ElasticLoadBalancingV2::Listener
+    Properties:
+      DefaultActions:
+        - TargetGroupArn: !Ref ServiceRequestTargetGroup
+          Type: forward
+      LoadBalancerArn: !Ref ServiceRequestLoadBalancer
+      Port: 80
+      Protocol: HTTP
+  ServiceRequestTargetGroup:
+    Type: AWS::ElasticLoadBalancingV2::TargetGroup
+    Properties:
+      HealthCheckIntervalSeconds: 5
+      HealthCheckPath: /sr
+      HealthCheckTimeoutSeconds: 4
+      HealthyThresholdCount: 2
+      Matcher:
+        HttpCode: '405'
+      Port: 8081
+      Protocol: HTTP
+      TargetGroupAttributes:
+        - Key: deregistration_delay.timeout_seconds
+          Value: '30'
+      TargetType: ip
+      UnhealthyThresholdCount: 2
+      VpcId: !Ref VPC
+  WebSocketTargetGroupPeriodicEvent:
+    Type: AWS::Events::Rule
+    Properties:
+      ScheduleExpression: rate(1 minute)
+      Targets:
+        - Arn: !GetAtt WebsocketTargetGroupPeriodicLambdaFunction.Arn
+          Id: !Ref WebsocketTargetGroupPeriodicLambdaFunction
+  WebSocketTargetGroupPeriodicEventPermission:
+    Type: AWS::Lambda::Permission
+    Properties:
+      Action: lambda:InvokeFunction
+      FunctionName: !Ref WebsocketTargetGroupPeriodicLambdaFunction
+      Principal: events.amazonaws.com
+      SourceArn: !GetAtt WebSocketTargetGroupPeriodicEvent.Arn
+  WebsocketTargetGroupLambdaExecutionRole:
+    Type: AWS::IAM::Role
+    Properties:
+      AssumeRolePolicyDocument:
+        Version: 2012-10-17
+        Statement:
+          - Effect: Allow
+            Principal:
+              Service: lambda.amazonaws.com
+            Action: sts:AssumeRole
+      ManagedPolicyArns:
+        - arn:aws:iam::aws:policy/service-role/AWSLambdaBasicExecutionRole
+      Policies:
+        - PolicyName: target-group-lambda
+          PolicyDocument:
+            Version: 2012-10-17
+            Statement:
+              - Effect: Allow
+                Action:
+                  - ecs:ListTasks
+                  - ecs:DescribeTasks
+                  - elasticloadbalancing:DescribeTargetHealth
+                Resource: '*'
+              - Effect: Allow
+                Action:
+                  - elasticloadbalancing:RegisterTargets
+                  - elasticloadbalancing:DeregisterTargets
+                Resource: !Ref WebsocketTargetGroup
+  WebsocketTargetGroupPeriodicLambdaFunction:
+    Type: AWS::Lambda::Function
+    Properties:
+      Code:
+        ZipFile: !Sub |
+          import boto3
+
+          def handler(event, context):
+            elbv2 = boto3.client('elbv2')
+            ecs = boto3.client('ecs')
+
+            current_targets = elbv2.describe_target_health(TargetGroupArn='${WebsocketTargetGroup}')['TargetHealthDescriptions']
+            current_targets = {x['Target']['Id'] for x in current_targets}
+
+            print('current targets:', current_targets)
+            
+            tasks = ecs.list_tasks(cluster='${ECSCluster}', serviceName='${ECSService}', desiredStatus='RUNNING')
+            task_definitions = ecs.describe_tasks(cluster='${ECSCluster}', tasks=tasks['taskArns'])
+
+            desired_targets = []
+            for task_definition in task_definitions['tasks']:
+              for container in task_definition['containers']:
+                if container['lastStatus'] == 'RUNNING':
+                  desired_targets.append(container['networkInterfaces'][0]['privateIpv4Address'])
+            desired_targets = set(desired_targets)
+
+            print('desired targets:', desired_targets)
+
+            new_targets = []
+            for ip in (desired_targets - current_targets):
+              print('registering target:', ip)
+              new_targets.append({
+                'Id': ip,
+                'Port': 8080,
+              })
+            if len(new_targets) > 0:
+              elbv2.register_targets(TargetGroupArn='${WebsocketTargetGroup}', Targets=new_targets)
+
+            old_targets = []
+            for ip in (current_targets - desired_targets):
+              print('deregistering target:', ip)
+              old_targets.append({
+                'Id': ip,
+                'Port': 8080,
+              })
+            if len(old_targets) > 0:
+              elbv2.deregister_targets(TargetGroupArn='${WebsocketTargetGroup}', Targets=old_targets)
+      Handler: index.handler
+      Role: !GetAtt WebsocketTargetGroupLambdaExecutionRole.Arn
+      Runtime: python3.6
+      Timeout: 30
+  WebsocketTargetGroupStateChangeEventRule:
+    Type: AWS::Events::Rule
+    Properties:
+      State: ENABLED
+      EventPattern:
+        source:
+          - aws.ecs
+        detail-type:
+          - ECS Task State Change
+        detail:
+          clusterArn:
+            - !GetAtt ECSCluster.Arn
+          group:
+            - !Sub service:${ECSService.Name}
+      Targets:
+        - Arn: !GetAtt WebsocketTargetGroupStateChangeLambdaFunction.Arn
+          Id: lambda
+  WebsocketTargetGroupStateChangeEventPermission:
+    Type: AWS::Lambda::Permission
+    Properties:
+      Action: lambda:InvokeFunction
+      FunctionName: !Sub ${WebsocketTargetGroupStateChangeLambdaFunction.Arn}
+      Principal: events.amazonaws.com
+      SourceArn: !Sub ${WebsocketTargetGroupStateChangeEventRule.Arn}
+  WebsocketTargetGroupStateChangeLambdaFunction:
+    Type: AWS::Lambda::Function
+    Properties:
+      Code:
+        ZipFile: !Sub |
+          import boto3
+
+          def handler(event, context):
+            if event['source'] != 'aws.ecs' or event['detail-type'] != 'ECS Task State Change':
+              return
+
+            print(event)
+
+            lastStatus = event['detail']['lastStatus']
+            if lastStatus == 'PENDING' or lastStatus == 'PROVISIONING':
+              return
+
+            container = event['detail']['containers'][0]
+            if container['lastStatus'] == 'PENDING' or container['lastStatus'] == 'PROVISIONING':
+              return
+
+            desiredStatus = event['detail']['desiredStatus']
+            target = {
+              'Id': container['networkInterfaces'][0]['privateIpv4Address'],
+              'Port': 8080,
+            }
+
+            elbv2 = boto3.client('elbv2')
+
+            if lastStatus == 'RUNNING' and desiredStatus == 'RUNNING':
+              print('registering target:', target['Id'])
+              elbv2.register_targets(TargetGroupArn='${WebsocketTargetGroup}', Targets=[target])
+            elif desiredStatus == 'STOPPED':
+              print('deregistering target:', target['Id'])
+              elbv2.deregister_targets(TargetGroupArn='${WebsocketTargetGroup}', Targets=[target])
+      Handler: index.handler
+      Role: !GetAtt WebsocketTargetGroupLambdaExecutionRole.Arn
+      Runtime: python3.6
+      Timeout: 30
+  WebsocketTargetGroup:
+    Type: AWS::ElasticLoadBalancingV2::TargetGroup
+    Properties:
+      HealthCheckIntervalSeconds: 5
+      HealthCheckTimeoutSeconds: 4
+      HealthyThresholdCount: 2
+      Matcher:
+        HttpCode: '400'
+      Port: 8080
+      Protocol: HTTP
+      TargetGroupAttributes:
+        - Key: deregistration_delay.timeout_seconds
+          Value: '30'
+      TargetType: ip
+      UnhealthyThresholdCount: 2
+      VpcId: !Ref VPC
