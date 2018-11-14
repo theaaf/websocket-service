@@ -22,6 +22,10 @@ Outputs:
     Value: !Ref OriginSecurityGroup
     Export:
       Name: !Sub '${AWS::StackName}-OriginSecurityGroup'
+  SecurityGroup:
+    Value: !Ref SecurityGroup
+    Export:
+      Name: !Sub '${AWS::StackName}-SecurityGroup'
   ServiceURL:
     Value: !Sub http://${ServiceRequestLoadBalancer.DNSName}/sr
     Export:
@@ -210,7 +214,9 @@ Resources:
           Name: websocket-service
           PortMappings:
             - ContainerPort: 8080
+              HostPort: 8080
             - ContainerPort: 8081
+              HostPort: 8081
           Ulimits:
             - HardLimit: 4096
               Name: nofile
@@ -393,6 +399,10 @@ Resources:
 
             lastStatus = event['detail']['lastStatus']
             if lastStatus == 'PENDING' or lastStatus == 'PROVISIONING':
+              return
+
+            container = event['detail']['containers'][0]
+            if container['lastStatus'] == 'PENDING' or container['lastStatus'] == 'PROVISIONING':
               return
 
             desiredStatus = event['detail']['desiredStatus']
