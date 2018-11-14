@@ -320,7 +320,7 @@ Resources:
             ecs = boto3.client('ecs')
 
             current_targets = elbv2.describe_target_health(TargetGroupArn='${WebsocketTargetGroup}')['TargetHealthDescriptions']
-            current_targets = set([x['Target']['Id'] for x in current_targets])
+            current_targets = {x['Target']['Id'] for x in current_targets}
 
             print('current targets:', current_targets)
             
@@ -332,28 +332,27 @@ Resources:
               for container in task_definition['containers']:
                 if container['lastStatus'] == 'RUNNING':
                   desired_targets.append(container['networkInterfaces'][0]['privateIpv4Address'])
+            desired_targets = set(desired_targets)
 
             print('desired targets:', desired_targets)
 
             new_targets = []
-            for ip in desired_targets:
-              if ip not in current_targets:
-                print('registering target:', ip)
-                new_targets.append({
-                  'Id': ip,
-                  'Port': 8080,
-                })
+            for ip in (desired_targets - current_targets):
+              print('registering target:', ip)
+              new_targets.append({
+                'Id': ip,
+                'Port': 8080,
+              })
             if len(new_targets) > 0:
               elbv2.register_targets(TargetGroupArn='${WebsocketTargetGroup}', Targets=new_targets)
 
             old_targets = []
-            for ip in current_targets:
-              if ip not in desired_targets:
-                print('deregistering target:', ip)
-                old_targets.append({
-                  'Id': ip,
-                  'Port': 8080,
-                })
+            for ip in (current_targets - desired_targets):
+              print('deregistering target:', ip)
+              old_targets.append({
+                'Id': ip,
+                'Port': 8080,
+              })
             if len(old_targets) > 0:
               elbv2.deregister_targets(TargetGroupArn='${WebsocketTargetGroup}', Targets=old_targets)
       Handler: index.handler
