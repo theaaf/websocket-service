@@ -425,6 +425,9 @@ Resources:
             if container['lastStatus'] == 'PENDING' or container['lastStatus'] == 'PROVISIONING':
               return
 
+            if len(container['networkInterfaces']) == 0:
+              return
+
             desiredStatus = event['detail']['desiredStatus']
             target = {
               'Id': container['networkInterfaces'][0]['privateIpv4Address'],
