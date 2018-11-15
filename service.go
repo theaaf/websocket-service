@@ -262,11 +262,19 @@ func (s *Service) HandleServiceRequest(r *ServiceRequest) {
 	}
 	s.connectionsMutex.Unlock()
 
+	var wg sync.WaitGroup
 	for address, request := range requestsToForward {
-		if err := s.Cluster.SendServiceRequest(Address(address), request); err != nil {
-			s.Logger.Warn(errors.Wrap(err, "unable to forward service request"))
-		}
+		address := address
+		request := request
+		wg.Add(1)
+		go func() {
+			defer wg.Done()
+			if err := s.Cluster.SendServiceRequest(Address(address), request); err != nil {
+				s.Logger.Warn(errors.Wrap(err, "unable to forward service request"))
+			}
+		}()
 	}
+	wg.Wait()
 }
 
 type ServiceRequest struct {
