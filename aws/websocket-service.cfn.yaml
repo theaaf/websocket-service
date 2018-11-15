@@ -10,8 +10,12 @@ Parameters:
     Default: 2
     # More than 100 instances would require making WebsocketTargetGroupPeriodicLambdaFunction more robust.
     MaxValue: 100
+  KeepAliveInterval:
+    Type: String
   OriginURL:
     Type: String
+  Subprotocols:
+    Type: List<String>
   Subnets:
     Description: The subnets to place the service in. These should generally be private subnets.
     Type: List<AWS::EC2::Subnet::Id>
@@ -34,6 +38,10 @@ Outputs:
     Value: !Ref WebsocketTargetGroup
     Export:
       Name: !Sub '${AWS::StackName}-WebsocketTargetGroup'
+  WebsocketLoadBalancerSecurityGroup:
+    Value: !Ref WebsocketLoadBalancerSecurityGroup
+    Export:
+      Name: !Sub '${AWS::StackName}-WebsocketLoadBalancerSecurityGroup'
 Resources:
   AutoScalingGroup:
     Type: AWS::AutoScaling::AutoScalingGroup
@@ -179,6 +187,10 @@ Resources:
     Properties:
       GroupDescription: websocket-service
       SecurityGroupIngress:
+        - FromPort: 8080
+          IpProtocol: tcp
+          SourceSecurityGroupId: !Ref WebsocketLoadBalancerSecurityGroup
+          ToPort: 8080
         - FromPort: 8081
           IpProtocol: tcp
           SourceSecurityGroupId: !Ref ServiceRequestLoadBalancerSecurityGroup
@@ -203,6 +215,10 @@ Resources:
             - '8080'
             - --origin-url
             - !Ref OriginURL
+            - --keep-alive-interval
+            - !Ref KeepAliveInterval
+            - --subprotocols
+            - Fn::Join: [',', !Ref Subprotocols]
           Image: !Ref Image
           LogConfiguration:
             LogDriver: awslogs
@@ -266,20 +282,25 @@ Resources:
       TargetType: ip
       UnhealthyThresholdCount: 2
       VpcId: !Ref VPC
-  WebSocketTargetGroupPeriodicEvent:
+  WebsocketLoadBalancerSecurityGroup:
+    Type: AWS::EC2::SecurityGroup
+    Properties:
+      GroupDescription: websocket-load-balancer
+      VpcId: !Ref VPC
+  WebsocketTargetGroupPeriodicEvent:
     Type: AWS::Events::Rule
     Properties:
       ScheduleExpression: rate(1 minute)
       Targets:
         - Arn: !GetAtt WebsocketTargetGroupPeriodicLambdaFunction.Arn
           Id: !Ref WebsocketTargetGroupPeriodicLambdaFunction
-  WebSocketTargetGroupPeriodicEventPermission:
+  WebsocketTargetGroupPeriodicEventPermission:
     Type: AWS::Lambda::Permission
     Properties:
       Action: lambda:InvokeFunction
       FunctionName: !Ref WebsocketTargetGroupPeriodicLambdaFunction
       Principal: events.amazonaws.com
-      SourceArn: !GetAtt WebSocketTargetGroupPeriodicEvent.Arn
+      SourceArn: !GetAtt WebsocketTargetGroupPeriodicEvent.Arn
   WebsocketTargetGroupLambdaExecutionRole:
     Type: AWS::IAM::Role
     Properties:
