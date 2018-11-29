@@ -1,4 +1,6 @@
-FROM golang:1.10
+FROM golang:1.11-alpine
+
+RUN apk add --no-cache git
 
 RUN wget -O - https://raw.githubusercontent.com/golang/dep/master/install.sh | sh
 
@@ -8,7 +10,7 @@ COPY . .
 RUN dep ensure
 RUN go build -o websocket-service ./service
 
-FROM golang:1.10
+FROM golang:1.11-alpine
 
 WORKDIR /opt/websocket-service/bin
 

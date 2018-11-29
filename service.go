@@ -118,7 +118,7 @@ func (s *Service) startKeepAlives() {
 		return
 	}
 
-	logrus.Info("starting keep-alives")
+	s.Logger.Info("starting keep-alives")
 
 	s.keepAliveTicker = time.NewTicker(s.KeepAliveInterval)
 	s.stopKeepAlivesSignal = make(chan struct{})
@@ -143,7 +143,7 @@ func (s *Service) stopKeepAlives() {
 		return
 	}
 
-	logrus.Info("stopping keep-alives")
+	s.Logger.Info("stopping keep-alives")
 
 	close(s.stopKeepAlivesSignal)
 	<-s.didStopKeepAlivesSignal
