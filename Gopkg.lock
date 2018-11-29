@@ -134,6 +134,14 @@
 
 [[projects]]
   branch = "master"
+  digest = "1:9a602e0f099a1b4dfb8d621e40ecff39b4dc4b7a588f44bd3ddb1e7f32cb7ca8"
+  name = "github.com/viki-org/dnscache"
+  packages = ["."]
+  pruneopts = "UT"
+  revision = "c70c1f23c5d84ab39054ec6b418a5ed0fa51cade"
+
+[[projects]]
+  branch = "master"
   digest = "1:3f3a05ae0b95893d90b9b3b5afdb79a9b3d96e4e36e099d841ae602e4aca0da8"
   name = "golang.org/x/crypto"
   packages = ["ssh/terminal"]
@@ -165,6 +173,7 @@
     "github.com/spf13/pflag",
     "github.com/stretchr/testify/assert",
     "github.com/stretchr/testify/require",
+    "github.com/viki-org/dnscache",
     "golang.org/x/crypto/ssh/terminal",
     "golang.org/x/sys/unix",
   ]
