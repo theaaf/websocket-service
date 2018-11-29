@@ -62,7 +62,7 @@ type HTTPOrigin struct {
 	URL string
 }
 
-var dnsResolver = dnscache.New(time.Minute * 5)
+var dnsResolver = dnscache.New(time.Minute)
 
 var httpTransport = &http.Transport{
 	Proxy: http.ProxyFromEnvironment,
