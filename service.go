@@ -36,6 +36,10 @@ type Service struct {
 	connectionsMutex sync.Mutex
 	connections      map[string]*Connection
 	connectionIds    map[*Connection]ConnectionId
+
+	keepAliveTicker         *time.Ticker
+	stopKeepAlivesSignal    chan struct{}
+	didStopKeepAlivesSignal chan struct{}
 }
 
 func (s *Service) ServeHTTP(w http.ResponseWriter, r *http.Request) {
@@ -84,10 +88,14 @@ func (s *Service) serveWebSocket(w http.ResponseWriter, r *http.Request) {
 
 	s.connectionsMutex.Lock()
 	logger := s.Logger.WithField("connection_id", id)
-	logger.WithField("connection_count", len(s.connections)+1).Info("connection established")
-	connection := NewConnection(conn, logger, s.connectionHandler(id, logger), s.KeepAliveInterval)
+	logger.WithFields(logrus.Fields{
+		"connection_count": len(s.connections) + 1,
+		"connection_id":    id,
+	}).Info("connection established")
+	connection := NewConnection(conn, logger, s.connectionHandler(id, logger))
 	s.connections[string(id)] = connection
 	s.connectionIds[connection] = id
+	s.startKeepAlives()
 	s.connectionsMutex.Unlock()
 
 	if err := s.Origin.SendOriginRequest(&OriginRequest{
@@ -105,21 +113,82 @@ func (s *Service) serveWebSocket(w http.ResponseWriter, r *http.Request) {
 	return
 }
 
+func (s *Service) startKeepAlives() {
+	if s.keepAliveTicker != nil || s.KeepAliveInterval <= 0 {
+		return
+	}
+
+	s.Logger.Info("starting keep-alives")
+
+	s.keepAliveTicker = time.NewTicker(s.KeepAliveInterval)
+	s.stopKeepAlivesSignal = make(chan struct{})
+	s.didStopKeepAlivesSignal = make(chan struct{})
+
+	go func() {
+		defer close(s.didStopKeepAlivesSignal)
+
+		for {
+			select {
+			case <-s.stopKeepAlivesSignal:
+				return
+			case <-s.keepAliveTicker.C:
+				s.sendKeepAlives()
+			}
+		}
+	}()
+}
+
+func (s *Service) stopKeepAlives() {
+	if s.keepAliveTicker == nil {
+		return
+	}
+
+	s.Logger.Info("stopping keep-alives")
+
+	close(s.stopKeepAlivesSignal)
+	<-s.didStopKeepAlivesSignal
+
+	s.keepAliveTicker.Stop()
+	s.keepAliveTicker = nil
+	s.stopKeepAlivesSignal = nil
+	s.didStopKeepAlivesSignal = nil
+}
+
+func (s *Service) sendKeepAlives() {
+	var keepAlives []*WebSocketKeepAlive
+	s.connectionsMutex.Lock()
+	keepAlives = make([]*WebSocketKeepAlive, len(s.connections))
+	i := 0
+	for _, connectionId := range s.connectionIds {
+		keepAlives[i] = &WebSocketKeepAlive{
+			ConnectionId: connectionId,
+		}
+		i++
+	}
+	if len(keepAlives) > 0 {
+		s.Logger.WithField("connection_count", len(keepAlives)).Info("sending keep-alives")
+	}
+	s.connectionsMutex.Unlock()
+
+	const maxBatchSize = 10000
+	for len(keepAlives) > 0 {
+		batch := keepAlives
+		if len(batch) > maxBatchSize {
+			batch = batch[:maxBatchSize]
+		}
+		if err := s.Origin.SendOriginRequest(&OriginRequest{
+			WebSocketKeepAlives: batch,
+		}); err != nil {
+			s.Logger.Warn(errors.Wrap(err, "origin error on websocket keep-alives"))
+		}
+		keepAlives = keepAlives[len(batch):]
+	}
+}
+
 type serviceConnectionHandler struct {
 	s            *Service
 	connectionId ConnectionId
 	logger       logrus.FieldLogger
-}
-
-func (h *serviceConnectionHandler) KeepAlive() {
-	if err := h.s.Origin.SendOriginRequest(&OriginRequest{
-		WebSocketEvent: &WebSocketEvent{
-			ConnectionId: h.connectionId,
-			KeepAlive:    &WebSocketKeepAlive{},
-		},
-	}); err != nil {
-		h.logger.Warn(errors.Wrap(err, "origin error on websocket keep-alive"))
-	}
 }
 
 func (h *serviceConnectionHandler) HandleWebSocketMessage(msg *WebSocketMessage) {
@@ -221,6 +290,9 @@ func (s *Service) closeConnection(id ConnectionId) (bool, error) {
 			"connection_count": len(s.connections),
 			"connection_id":    id,
 		}).Info("connection closed")
+		if len(s.connections) == 0 {
+			s.stopKeepAlives()
+		}
 		return true, nil
 	}
 	return false, nil

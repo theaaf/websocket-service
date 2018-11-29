@@ -46,17 +46,12 @@ type Connection struct {
 	writeLoopDone     chan struct{}
 	outgoing          chan *websocket.PreparedMessage
 	handler           ConnectionHandler
-	keepAliveInterval time.Duration
 	close             chan struct{}
 	beginClosingOnce  sync.Once
 	finishClosingOnce sync.Once
 }
 
 type ConnectionHandler interface {
-	// KeepAlive will be invoked periodically according to the connection's specified keep-alive
-	// interval.
-	KeepAlive()
-
 	HandleWebSocketMessage(msg *WebSocketMessage)
 
 	HandleClose()
@@ -64,16 +59,15 @@ type ConnectionHandler interface {
 
 const connectionSendBufferSize = 100
 
-func NewConnection(conn *websocket.Conn, logger logrus.FieldLogger, handler ConnectionHandler, keepAliveInterval time.Duration) *Connection {
+func NewConnection(conn *websocket.Conn, logger logrus.FieldLogger, handler ConnectionHandler) *Connection {
 	ret := &Connection{
-		conn:              conn,
-		logger:            logger,
-		readLoopDone:      make(chan struct{}),
-		writeLoopDone:     make(chan struct{}),
-		outgoing:          make(chan *websocket.PreparedMessage, connectionSendBufferSize),
-		close:             make(chan struct{}),
-		handler:           handler,
-		keepAliveInterval: keepAliveInterval,
+		conn:          conn,
+		logger:        logger,
+		readLoopDone:  make(chan struct{}),
+		writeLoopDone: make(chan struct{}),
+		outgoing:      make(chan *websocket.PreparedMessage, connectionSendBufferSize),
+		close:         make(chan struct{}),
+		handler:       handler,
 	}
 	go ret.readLoop()
 	go ret.writeLoop()
@@ -130,14 +124,6 @@ func (c *Connection) writeLoop() {
 
 	defer c.conn.Close()
 
-	var tick <-chan time.Time
-
-	if c.keepAliveInterval > 0 {
-		ticker := time.NewTicker(c.keepAliveInterval)
-		tick = ticker.C
-		defer ticker.Stop()
-	}
-
 	for {
 		select {
 		case msg, ok := <-c.outgoing:
@@ -155,8 +141,6 @@ func (c *Connection) writeLoop() {
 			}
 		case <-c.close:
 			return
-		case <-tick:
-			c.handler.KeepAlive()
 		}
 	}
 }
