@@ -2,12 +2,18 @@ package transport
 
 import (
 	"bytes"
+	"context"
 	"fmt"
 	"io/ioutil"
+	"net"
 	"net/http"
+	"strings"
+	"time"
+
+	jsoniter "github.com/json-iterator/go"
+	"github.com/viki-org/dnscache"
 
 	wss "github.aaf.cloud/platform/websocket-service"
-	jsoniter "github.com/json-iterator/go"
 )
 
 type HTTPService struct {
@@ -56,12 +62,32 @@ type HTTPOrigin struct {
 	URL string
 }
 
+var dnsResolver = dnscache.New(time.Minute)
+
+var httpTransport = &http.Transport{
+	Proxy: http.ProxyFromEnvironment,
+	DialContext: func(ctx context.Context, network, addr string) (net.Conn, error) {
+		separator := strings.LastIndex(addr, ":")
+		ip, _ := dnsResolver.FetchOneString(addr[:separator])
+		var d net.Dialer
+		return d.DialContext(ctx, "tcp", ip+addr[separator:])
+	},
+	MaxIdleConns:          100,
+	IdleConnTimeout:       90 * time.Second,
+	TLSHandshakeTimeout:   10 * time.Second,
+	ExpectContinueTimeout: 1 * time.Second,
+}
+
+var httpClient = &http.Client{
+	Transport: httpTransport,
+}
+
 func (o *HTTPOrigin) SendOriginRequest(r *wss.OriginRequest) error {
 	b, err := jsoniter.Marshal(r)
 	if err != nil {
 		return err
 	}
-	resp, err := http.Post(o.URL, "application/json", bytes.NewReader(b))
+	resp, err := httpClient.Post(o.URL, "application/json", bytes.NewReader(b))
 	if err != nil {
 		return err
 	}
