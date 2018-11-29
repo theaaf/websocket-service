@@ -252,9 +252,7 @@ func TestService_KeepAliveInterval(t *testing.T) {
 
 	// Wait for the origin to get a keep-alive.
 	origin.WaitForRequest(func(request *wss.OriginRequest) error {
-		require.NotNil(t, request.WebSocketEvent)
-		assert.Equal(t, connectionId, request.WebSocketEvent.ConnectionId)
-		assert.NotNil(t, *request.WebSocketEvent.KeepAlive)
+		assert.NotEmpty(t, request.WebSocketKeepAlives)
 		return nil
 	})
 }
