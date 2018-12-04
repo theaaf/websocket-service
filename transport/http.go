@@ -39,12 +39,16 @@ func (c *HTTPCluster) Address() wss.Address {
 	return []byte(c.ListenURI)
 }
 
+var serviceHTTPClient = &http.Client{
+	Timeout: 10 * time.Second,
+}
+
 func (c *HTTPCluster) SendServiceRequest(addr wss.Address, r *wss.ServiceRequest) error {
 	b, err := jsoniter.Marshal(r)
 	if err != nil {
 		return err
 	}
-	resp, err := http.Post(fmt.Sprintf("http://%s", []byte(addr)), "application/json", bytes.NewReader(b))
+	resp, err := serviceHTTPClient.Post(fmt.Sprintf("http://%s", []byte(addr)), "application/json", bytes.NewReader(b))
 	if err != nil {
 		return err
 	}
@@ -64,7 +68,7 @@ type HTTPOrigin struct {
 
 var dnsResolver = dnscache.New(time.Minute)
 
-var httpTransport = &http.Transport{
+var originHTTPTransport = &http.Transport{
 	Proxy: http.ProxyFromEnvironment,
 	DialContext: func(ctx context.Context, network, addr string) (net.Conn, error) {
 		separator := strings.LastIndex(addr, ":")
@@ -78,8 +82,9 @@ var httpTransport = &http.Transport{
 	ExpectContinueTimeout: 1 * time.Second,
 }
 
-var httpClient = &http.Client{
-	Transport: httpTransport,
+var originHTTPClient = &http.Client{
+	Transport: originHTTPTransport,
+	Timeout:   30 * time.Second,
 }
 
 func (o *HTTPOrigin) SendOriginRequest(r *wss.OriginRequest) error {
@@ -87,7 +92,7 @@ func (o *HTTPOrigin) SendOriginRequest(r *wss.OriginRequest) error {
 	if err != nil {
 		return err
 	}
-	resp, err := httpClient.Post(o.URL, "application/json", bytes.NewReader(b))
+	resp, err := originHTTPClient.Post(o.URL, "application/json", bytes.NewReader(b))
 	if err != nil {
 		return err
 	}
