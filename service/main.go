@@ -5,6 +5,7 @@ import (
 	"fmt"
 	"net"
 	"net/http"
+	"net/http/pprof"
 	"os"
 	"os/signal"
 	"sync"
@@ -91,11 +92,42 @@ func serveWebSockets(ctx context.Context, service *wss.Service, port int) error 
 	return ctx.Err()
 }
 
+func serveDebug(ctx context.Context, service *wss.Service, listener net.Listener) error {
+	router := http.NewServeMux()
+	router.HandleFunc("/debug/pprof/", pprof.Index)
+	router.HandleFunc("/debug/pprof/cmdline", pprof.Cmdline)
+	router.HandleFunc("/debug/pprof/profile", pprof.Profile)
+	router.HandleFunc("/debug/pprof/symbol", pprof.Symbol)
+	router.HandleFunc("/debug/pprof/trace", pprof.Trace)
+
+	s := &http.Server{
+		Handler:     router,
+		ReadTimeout: 2 * time.Minute,
+	}
+
+	done := make(chan struct{})
+	go func() {
+		<-ctx.Done()
+		if err := s.Shutdown(context.Background()); err != nil {
+			logrus.Error(err)
+		}
+		close(done)
+	}()
+
+	service.Logger.Infof("serving pprof at http://127.0.0.1:%d/debug/pprof", listener.Addr().(*net.TCPAddr).Port)
+	if err := s.Serve(listener); err != http.ErrServerClosed {
+		logrus.Error(err)
+	}
+	<-done
+	return ctx.Err()
+}
+
 func serve(ctx context.Context, args []string) error {
 	flags := pflag.NewFlagSet(os.Args[0], pflag.ContinueOnError)
 	originURL := flags.String("origin-url", "", "the origin's url")
 	websocketPort := flags.Int("websocket-port", 0, "the port to use for websocket connections")
 	serviceRequestPort := flags.Int("service-request-port", 0, "the port to use for service requests")
+	debugPort := flags.Int("debug-port", 0, "the port to use for debug information")
 	keepAliveInterval := flags.Duration("keep-alive-interval", 0, "if given, the origin will receive keep-alive messages for websocket connections")
 	subprotocols := flags.StringSlice("subprotocols", nil, "the subprotocols to negotiate on websocket connections")
 	if err := flags.Parse(args); err != nil {
@@ -112,6 +144,11 @@ func serve(ctx context.Context, args []string) error {
 	}
 
 	serviceRequestListener, err := net.Listen("tcp4", fmt.Sprintf(":%v", *serviceRequestPort))
+	if err != nil {
+		return err
+	}
+
+	debugListener, err := net.Listen("tcp4", fmt.Sprintf(":%v", *debugPort))
 	if err != nil {
 		return err
 	}
@@ -151,6 +188,15 @@ func serve(ctx context.Context, args []string) error {
 		defer cancel()
 		defer wg.Done()
 		if err := serveServiceRequests(ctx, service, serviceRequestListener); err != nil && err != context.Canceled {
+			service.Logger.Error(err)
+		}
+	}()
+
+	wg.Add(1)
+	go func() {
+		defer cancel()
+		defer wg.Done()
+		if err := serveDebug(ctx, service, debugListener); err != nil && err != context.Canceled {
 			service.Logger.Error(err)
 		}
 	}()
