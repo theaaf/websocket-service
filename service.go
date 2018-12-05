@@ -298,27 +298,36 @@ func (s *Service) closeConnection(id ConnectionId) (bool, error) {
 	return false, nil
 }
 
+type localMessageToSend struct {
+	ConnectionId    ConnectionId
+	PreparedMessage *websocket.PreparedMessage
+}
+
 func (s *Service) HandleServiceRequest(r *ServiceRequest) {
 	s.init()
 
 	requestsToForward := map[string]*ServiceRequest{}
+	var localMessagesToSend []localMessageToSend
 
-	s.connectionsMutex.Lock()
 	for _, msg := range r.OutgoingWebSocketMessages {
-		preparedMessage, err := msg.Message.PreparedMessage()
-		if err != nil {
-			s.Logger.Warn(errors.Wrap(err, "invalid message in service request"))
-			continue
-		}
+		var preparedMessage *websocket.PreparedMessage
 		forwarded := map[string][]ConnectionId{}
 		for _, id := range msg.ConnectionIds {
 			if id.Address().Equal(s.address) {
-				if conn, ok := s.connections[string(id)]; ok {
-					conn.Send(preparedMessage)
+				if preparedMessage == nil {
+					var err error
+					if preparedMessage, err = msg.Message.PreparedMessage(); err != nil {
+						s.Logger.Warn(errors.Wrap(err, "invalid message in service request"))
+						break
+					}
 				}
-				continue
+				localMessagesToSend = append(localMessagesToSend, localMessageToSend{
+					ConnectionId:    id,
+					PreparedMessage: preparedMessage,
+				})
+			} else {
+				forwarded[string(id.Address())] = append(forwarded[string(id.Address())], id)
 			}
-			forwarded[string(id.Address())] = append(forwarded[string(id.Address())], id)
 		}
 		for address, ids := range forwarded {
 			forwardedRequest, ok := requestsToForward[address]
@@ -332,7 +341,16 @@ func (s *Service) HandleServiceRequest(r *ServiceRequest) {
 			})
 		}
 	}
-	s.connectionsMutex.Unlock()
+
+	if len(localMessagesToSend) > 0 {
+		s.connectionsMutex.Lock()
+		for _, msg := range localMessagesToSend {
+			if conn, ok := s.connections[string(msg.ConnectionId)]; ok {
+				conn.Send(msg.PreparedMessage)
+			}
+		}
+		s.connectionsMutex.Unlock()
+	}
 
 	var wg sync.WaitGroup
 	for address, request := range requestsToForward {
