@@ -11,9 +11,11 @@ import (
 	"time"
 
 	jsoniter "github.com/json-iterator/go"
+	"github.com/pkg/errors"
 	"github.com/viki-org/dnscache"
 
 	wss "github.aaf.cloud/platform/websocket-service"
+	"github.aaf.cloud/platform/websocket-service/subprotocol"
 )
 
 type HTTPService struct {
@@ -27,6 +29,19 @@ func (h HTTPService) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	h.Service.HandleServiceRequest(serviceRequest)
+}
+
+type HTTPGraphQLWSService struct {
+	Subprotocol *subprotocol.GraphQLWS
+}
+
+func (h HTTPGraphQLWSService) ServeHTTP(w http.ResponseWriter, r *http.Request) {
+	var serviceRequest *subprotocol.GraphQLWSServiceRequest
+	if err := jsoniter.NewDecoder(r.Body).Decode(&serviceRequest); err != nil {
+		http.Error(w, err.Error(), http.StatusInternalServerError)
+		return
+	}
+	h.Subprotocol.HandleGraphQLWSServiceRequest(serviceRequest)
 }
 
 type HTTPCluster struct {
@@ -44,6 +59,14 @@ var serviceHTTPClient = &http.Client{
 }
 
 func (c *HTTPCluster) SendServiceRequest(addr wss.Address, r *wss.ServiceRequest) error {
+	return c.sendServiceRequest(addr, r)
+}
+
+func (c *HTTPCluster) SendGraphQLWSServiceRequest(addr wss.Address, r *subprotocol.GraphQLWSServiceRequest) error {
+	return c.sendServiceRequest(addr, r)
+}
+
+func (c *HTTPCluster) sendServiceRequest(addr wss.Address, r interface{}) error {
 	b, err := jsoniter.Marshal(r)
 	if err != nil {
 		return err
@@ -87,12 +110,16 @@ var originHTTPClient = &http.Client{
 	Timeout:   30 * time.Second,
 }
 
-func (o *HTTPOrigin) SendOriginRequest(r *wss.OriginRequest) error {
-	b, err := jsoniter.Marshal(r)
+func (o *HTTPOrigin) Post(body interface{}) (*http.Response, error) {
+	b, err := jsoniter.Marshal(body)
 	if err != nil {
-		return err
+		return nil, err
 	}
-	resp, err := originHTTPClient.Post(o.URL, "application/json", bytes.NewReader(b))
+	return originHTTPClient.Post(o.URL, "application/json", bytes.NewReader(b))
+}
+
+func (o *HTTPOrigin) SendOriginRequest(r *wss.OriginRequest) error {
+	resp, err := o.Post(r)
 	if err != nil {
 		return err
 	}
@@ -104,4 +131,23 @@ func (o *HTTPOrigin) SendOriginRequest(r *wss.OriginRequest) error {
 	}
 
 	return nil
+}
+
+func (o *HTTPOrigin) SendGraphQLWSOriginRequest(r *subprotocol.GraphQLWSOriginRequest) (*subprotocol.GraphQLWSOriginResponse, error) {
+	resp, err := o.Post(r)
+	if err != nil {
+		return nil, err
+	}
+	defer resp.Body.Close()
+
+	if resp.StatusCode != http.StatusOK {
+		ioutil.ReadAll(resp.Body)
+		return nil, fmt.Errorf("origin responded with unexpected status code: %d", resp.StatusCode)
+	}
+
+	var ret *subprotocol.GraphQLWSOriginResponse
+	if err := jsoniter.NewDecoder(resp.Body).Decode(&ret); err != nil {
+		return nil, errors.Wrap(err, "error reading response body")
+	}
+	return ret, nil
 }

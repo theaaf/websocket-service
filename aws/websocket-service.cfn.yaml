@@ -15,7 +15,11 @@ Parameters:
   OriginURL:
     Type: String
   Subprotocols:
-    Type: List<String>
+    Type: CommaDelimitedList
+    Default: ''
+  Subprotocol:
+    Type: String
+    Default: ''
   Subnets:
     Description: The subnets to place the service in. These should generally be private subnets.
     Type: List<AWS::EC2::Subnet::Id>
@@ -221,6 +225,8 @@ Resources:
             - !Ref KeepAliveInterval
             - --subprotocols
             - Fn::Join: [',', !Ref Subprotocols]
+            - --subprotocol
+            - !Ref Subprotocol
           Image: !Ref Image
           LogConfiguration:
             LogDriver: awslogs

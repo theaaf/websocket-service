@@ -19,6 +19,7 @@ import (
 	"golang.org/x/sys/unix"
 
 	wss "github.aaf.cloud/platform/websocket-service"
+	"github.aaf.cloud/platform/websocket-service/subprotocol"
 	"github.aaf.cloud/platform/websocket-service/transport"
 )
 
@@ -31,11 +32,9 @@ func preferredIP() (net.IP, error) {
 	return conn.LocalAddr().(*net.UDPAddr).IP, nil
 }
 
-func serveServiceRequests(ctx context.Context, service *wss.Service, listener net.Listener) error {
+func serveServiceRequests(ctx context.Context, handler http.Handler, listener net.Listener) error {
 	router := mux.NewRouter()
-	router.Handle("/sr", transport.HTTPService{
-		Service: service,
-	}).Methods("POST")
+	router.Handle("/sr", handler).Methods("POST")
 
 	s := &http.Server{
 		Handler:     router,
@@ -58,7 +57,7 @@ func serveServiceRequests(ctx context.Context, service *wss.Service, listener ne
 	return ctx.Err()
 }
 
-func serveWebSockets(ctx context.Context, service *wss.Service, port int) error {
+func serveWebSockets(ctx context.Context, logger logrus.FieldLogger, handler http.Handler, port int) error {
 	cors := handlers.CORS(
 		handlers.AllowedOrigins([]string{"*"}),
 		handlers.AllowedMethods([]string{"GET", "HEAD", "POST", "OPTIONS"}),
@@ -69,10 +68,10 @@ func serveWebSockets(ctx context.Context, service *wss.Service, port int) error 
 		return err
 	}
 
-	service.Logger.Infof("handling websocket connections at http://%v", listener.Addr())
+	logger.Infof("handling websocket connections at http://%v", listener.Addr())
 
 	s := &http.Server{
-		Handler:     cors(service),
+		Handler:     cors(handler),
 		ReadTimeout: 2 * time.Minute,
 	}
 
@@ -92,7 +91,7 @@ func serveWebSockets(ctx context.Context, service *wss.Service, port int) error 
 	return ctx.Err()
 }
 
-func serveDebug(ctx context.Context, service *wss.Service, listener net.Listener) error {
+func serveDebug(ctx context.Context, logger logrus.FieldLogger, listener net.Listener) error {
 	router := http.NewServeMux()
 	router.HandleFunc("/debug/pprof/", pprof.Index)
 	router.HandleFunc("/debug/pprof/cmdline", pprof.Cmdline)
@@ -114,7 +113,7 @@ func serveDebug(ctx context.Context, service *wss.Service, listener net.Listener
 		close(done)
 	}()
 
-	service.Logger.Infof("serving pprof at http://127.0.0.1:%d/debug/pprof", listener.Addr().(*net.TCPAddr).Port)
+	logger.Infof("serving pprof at http://127.0.0.1:%d/debug/pprof", listener.Addr().(*net.TCPAddr).Port)
 	if err := s.Serve(listener); err != http.ErrServerClosed {
 		logrus.Error(err)
 	}
@@ -129,7 +128,8 @@ func serve(ctx context.Context, args []string) error {
 	serviceRequestPort := flags.Int("service-request-port", 0, "the port to use for service requests")
 	debugPort := flags.Int("debug-port", 0, "the port to use for debug information")
 	keepAliveInterval := flags.Duration("keep-alive-interval", 0, "if given, the origin will receive keep-alive messages for websocket connections")
-	subprotocols := flags.StringSlice("subprotocols", nil, "the subprotocols to negotiate on websocket connections")
+	subprotocols := flags.StringSlice("subprotocols", nil, "the subprotocols to negotiate on websocket connections (ignored when subprotocol is given)")
+	subprotocolArg := flags.String("subprotocol", "", "runs the service using a subprotocol origin and service request api")
 	if err := flags.Parse(args); err != nil {
 		return err
 	}
@@ -155,20 +155,49 @@ func serve(ctx context.Context, args []string) error {
 
 	listenURI := fmt.Sprintf("%s:%d/sr", ipAddress.String(), serviceRequestListener.Addr().(*net.TCPAddr).Port)
 
-	service := &wss.Service{
-		Origin: &transport.HTTPOrigin{
-			URL: *originURL,
-		},
-		Cluster: &transport.HTTPCluster{
-			ListenURI: listenURI,
-		},
-		Logger:            logrus.StandardLogger(),
-		KeepAliveInterval: *keepAliveInterval,
-		Subprotocols:      *subprotocols,
-	}
-	defer service.Close()
+	logger := logrus.StandardLogger()
 
-	service.Logger.Infof("handling service requests at http://%v", listenURI)
+	var webSocketHandler, serviceRequestHandler http.Handler
+
+	switch *subprotocolArg {
+	case "graphql-ws":
+		sp := &subprotocol.GraphQLWS{
+			Origin: &transport.HTTPOrigin{
+				URL: *originURL,
+			},
+			Cluster: &transport.HTTPCluster{
+				ListenURI: listenURI,
+			},
+			Logger:            logger,
+			KeepAliveInterval: *keepAliveInterval,
+		}
+		defer sp.Close()
+		webSocketHandler = sp
+		serviceRequestHandler = transport.HTTPGraphQLWSService{
+			Subprotocol: sp,
+		}
+	case "":
+		service := &wss.Service{
+			Origin: &transport.HTTPOrigin{
+				URL: *originURL,
+			},
+			Cluster: &transport.HTTPCluster{
+				ListenURI: listenURI,
+			},
+			Logger:            logger,
+			KeepAliveInterval: *keepAliveInterval,
+			Subprotocols:      *subprotocols,
+		}
+		defer service.Close()
+		webSocketHandler = service
+		serviceRequestHandler = transport.HTTPService{
+			Service: service,
+		}
+	default:
+		return fmt.Errorf("unsupported subprotocol")
+	}
+
+	logger.Infof("handling service requests at http://%v", listenURI)
 
 	var wg sync.WaitGroup
 
@@ -178,8 +207,8 @@ func serve(ctx context.Context, args []string) error {
 	go func() {
 		defer cancel()
 		defer wg.Done()
-		if err := serveWebSockets(ctx, service, *websocketPort); err != nil && err != context.Canceled {
-			service.Logger.Error(err)
+		if err := serveWebSockets(ctx, logger, webSocketHandler, *websocketPort); err != nil && err != context.Canceled {
+			logger.Error(err)
 		}
 	}()
 
@@ -187,8 +216,8 @@ func serve(ctx context.Context, args []string) error {
 	go func() {
 		defer cancel()
 		defer wg.Done()
-		if err := serveServiceRequests(ctx, service, serviceRequestListener); err != nil && err != context.Canceled {
-			service.Logger.Error(err)
+		if err := serveServiceRequests(ctx, serviceRequestHandler, serviceRequestListener); err != nil && err != context.Canceled {
+			logger.Error(err)
 		}
 	}()
 
@@ -196,8 +225,8 @@ func serve(ctx context.Context, args []string) error {
 	go func() {
 		defer cancel()
 		defer wg.Done()
-		if err := serveDebug(ctx, service, debugListener); err != nil && err != context.Canceled {
-			service.Logger.Error(err)
+		if err := serveDebug(ctx, logger, debugListener); err != nil && err != context.Canceled {
+			logger.Error(err)
 		}
 	}()
 
