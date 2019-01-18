@@ -328,6 +328,9 @@ Resources:
             Statement:
               - Effect: Allow
                 Action:
+                  - ec2:DescribeInternetGateways
+                  - ec2:DescribeSubnets
+                  - ec2:DescribeVpcs
                   - ecs:ListTasks
                   - ecs:DescribeTasks
                   - elasticloadbalancing:DescribeTargetHealth
