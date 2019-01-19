@@ -8,8 +8,6 @@ Parameters:
   InstanceCount:
     Type: Number
     Default: 2
-    # More than 100 instances would require making WebsocketTargetGroupPeriodicLambdaFunction more robust.
-    MaxValue: 100
   KeepAliveInterval:
     Type: String
   OriginURL:
@@ -356,14 +354,22 @@ Resources:
 
             print('current targets:', current_targets)
             
-            tasks = ecs.list_tasks(cluster='${ECSCluster}', serviceName='${ECSService}', desiredStatus='RUNNING')
-            task_definitions = ecs.describe_tasks(cluster='${ECSCluster}', tasks=tasks['taskArns'])
-
             desired_targets = []
-            for task_definition in task_definitions['tasks']:
-              for container in task_definition['containers']:
-                if container['lastStatus'] == 'RUNNING':
-                  desired_targets.append(container['networkInterfaces'][0]['privateIpv4Address'])
+
+            nextToken = ''
+            while True:
+              tasks = ecs.list_tasks(cluster='${ECSCluster}', nextToken=nextToken, serviceName='${ECSService}', desiredStatus='RUNNING')
+              task_definitions = ecs.describe_tasks(cluster='${ECSCluster}', tasks=tasks['taskArns'])
+
+              for task_definition in task_definitions['tasks']:
+                for container in task_definition['containers']:
+                  if container['lastStatus'] == 'RUNNING':
+                    desired_targets.append(container['networkInterfaces'][0]['privateIpv4Address'])
+
+              if 'nextToken' not in tasks or not tasks['nextToken']:
+                break
+              nextToken = tasks['nextToken']
+
             desired_targets = set(desired_targets)
 
             print('desired targets:', desired_targets)
