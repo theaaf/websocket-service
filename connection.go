@@ -137,7 +137,7 @@ func (c *Connection) writeLoop() {
 				if !websocket.IsCloseError(err, websocket.CloseAbnormalClosure, websocket.CloseGoingAway) && err != websocket.ErrCloseSent {
 					c.logger.Error(errors.Wrap(err, "websocket write error"))
 				}
-				break
+				return
 			}
 		case <-c.close:
 			return

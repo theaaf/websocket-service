@@ -186,21 +186,22 @@ func (sp *GraphQLWS) HandleGraphQLWSServiceRequest(r *GraphQLWSServiceRequest) {
 
 	if r.PublishRequest != nil {
 		for _, subscriber := range r.PublishRequest.Subscribers {
-			if subscriber.Equal(sp.Address()) {
-				sp.handleLocalPublishRequest(r.PublishRequest)
-			} else {
-				copy := *r.PublishRequest
-				copy.Subscribers = []wss.Address{subscriber}
-				wg.Add(1)
-				go func() {
-					defer wg.Done()
+			subscriber := subscriber
+			wg.Add(1)
+			go func() {
+				defer wg.Done()
+				if subscriber.Equal(sp.Address()) {
+					sp.handleLocalPublishRequest(r.PublishRequest)
+				} else {
+					copy := *r.PublishRequest
+					copy.Subscribers = []wss.Address{subscriber}
 					if err := sp.Cluster.SendGraphQLWSServiceRequest(subscriber, &GraphQLWSServiceRequest{
 						PublishRequest: &copy,
 					}); err != nil {
 						sp.Logger.Error(errors.Wrap(err, "error forwarding publish request"))
 					}
-				}()
-			}
+				}
+			}()
 		}
 	}
 }
