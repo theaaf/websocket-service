@@ -28,6 +28,11 @@ func (h HTTPService) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 		http.Error(w, err.Error(), http.StatusInternalServerError)
 		return
 	}
+	w.WriteHeader(http.StatusOK)
+	if flusher, ok := w.(http.Flusher); ok {
+		// Let the peer know right away that we're working on the request.
+		flusher.Flush()
+	}
 	h.Service.HandleServiceRequest(serviceRequest)
 }
 
@@ -40,6 +45,11 @@ func (h HTTPGraphQLWSService) ServeHTTP(w http.ResponseWriter, r *http.Request) 
 	if err := jsoniter.NewDecoder(r.Body).Decode(&serviceRequest); err != nil {
 		http.Error(w, err.Error(), http.StatusInternalServerError)
 		return
+	}
+	w.WriteHeader(http.StatusOK)
+	if flusher, ok := w.(http.Flusher); ok {
+		// Let the peer know right away that we're working on the request.
+		flusher.Flush()
 	}
 	h.Subprotocol.HandleGraphQLWSServiceRequest(serviceRequest)
 }
@@ -54,8 +64,20 @@ func (c *HTTPCluster) Address() wss.Address {
 	return []byte(c.ListenURI)
 }
 
+var serviceHTTPTransport = &http.Transport{
+	DialContext: (&net.Dialer{
+		Timeout:   500 * time.Millisecond,
+		KeepAlive: 30 * time.Second,
+	}).DialContext,
+	Proxy:                 http.ProxyFromEnvironment,
+	MaxIdleConns:          100,
+	IdleConnTimeout:       90 * time.Second,
+	ResponseHeaderTimeout: 500 * time.Millisecond,
+}
+
 var serviceHTTPClient = &http.Client{
-	Timeout: 10 * time.Second,
+	Transport: serviceHTTPTransport,
+	Timeout:   15 * time.Second,
 }
 
 func (c *HTTPCluster) SendServiceRequest(addr wss.Address, r *wss.ServiceRequest) error {
@@ -96,18 +118,18 @@ var originHTTPTransport = &http.Transport{
 	DialContext: func(ctx context.Context, network, addr string) (net.Conn, error) {
 		separator := strings.LastIndex(addr, ":")
 		ip, _ := dnsResolver.FetchOneString(addr[:separator])
-		var d net.Dialer
-		return d.DialContext(ctx, "tcp", ip+addr[separator:])
+		return (&net.Dialer{
+			Timeout: 1 * time.Second,
+		}).DialContext(ctx, "tcp", ip+addr[separator:])
 	},
-	MaxIdleConns:          100,
-	IdleConnTimeout:       90 * time.Second,
-	TLSHandshakeTimeout:   10 * time.Second,
-	ExpectContinueTimeout: 1 * time.Second,
+	MaxIdleConns:        100,
+	IdleConnTimeout:     90 * time.Second,
+	TLSHandshakeTimeout: 10 * time.Second,
 }
 
 var originHTTPClient = &http.Client{
 	Transport: originHTTPTransport,
-	Timeout:   30 * time.Second,
+	Timeout:   15 * time.Second,
 }
 
 func (o *HTTPOrigin) Post(body interface{}) (*http.Response, error) {
