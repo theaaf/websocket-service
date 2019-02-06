@@ -156,7 +156,7 @@ Resources:
       AssociatePublicIpAddress: false
       ImageId: !GetAtt ECSOptimizedAMIMetadata.ImageId
       IamInstanceProfile: !Ref InstanceProfile
-      InstanceType: c4.large
+      InstanceType: c4.xlarge
       SecurityGroups:
         - !Ref SecurityGroup
       UserData:
