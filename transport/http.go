@@ -14,8 +14,8 @@ import (
 	"github.com/pkg/errors"
 	"github.com/viki-org/dnscache"
 
-	wss "github.aaf.cloud/platform/websocket-service"
-	"github.aaf.cloud/platform/websocket-service/subprotocol"
+	wss "github.com/theaaf/websocket-service"
+	"github.com/theaaf/websocket-service/subprotocol"
 )
 
 type HTTPService struct {

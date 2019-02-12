@@ -1,4 +1,4 @@
-Description: github.aaf.cloud/platform/websocket-service
+Description: github.com/theaaf/websocket-service
 Parameters:
   ECSOptimizedAMI:
     Type: AWS::SSM::Parameter::Value<String>

@@ -1,4 +1,4 @@
-# websocket-service
+# websocket-service [![Build Status](https://travis-ci.org/theaaf/websocket-service.svg?branch=master)](https://travis-ci.org/theaaf/websocket-service)
 
 This service provides WebSocket handling that allows separation of WebSocket connection handling from application servers. Whenever a WebSocket connection is made or a message is received, a message is sent to your application server. Whenever your application server wishes to respond with a message, it can send a message to the WebSocket service cluster.
 

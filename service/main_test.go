@@ -15,7 +15,7 @@ import (
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 
-	wss "github.aaf.cloud/platform/websocket-service"
+	wss "github.com/theaaf/websocket-service"
 )
 
 func TestServe(t *testing.T) {

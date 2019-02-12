@@ -18,9 +18,9 @@ import (
 	"golang.org/x/crypto/ssh/terminal"
 	"golang.org/x/sys/unix"
 
-	wss "github.aaf.cloud/platform/websocket-service"
-	"github.aaf.cloud/platform/websocket-service/subprotocol"
-	"github.aaf.cloud/platform/websocket-service/transport"
+	wss "github.com/theaaf/websocket-service"
+	"github.com/theaaf/websocket-service/subprotocol"
+	"github.com/theaaf/websocket-service/transport"
 )
 
 func preferredIP() (net.IP, error) {

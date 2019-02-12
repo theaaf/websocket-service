@@ -12,9 +12,9 @@ import (
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 
-	wss "github.aaf.cloud/platform/websocket-service"
-	"github.aaf.cloud/platform/websocket-service/cluster"
-	"github.aaf.cloud/platform/websocket-service/subprotocol"
+	wss "github.com/theaaf/websocket-service"
+	"github.com/theaaf/websocket-service/cluster"
+	"github.com/theaaf/websocket-service/subprotocol"
 )
 
 type TestOrigin struct {
