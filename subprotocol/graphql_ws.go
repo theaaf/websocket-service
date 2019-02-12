@@ -12,7 +12,7 @@ import (
 	"github.com/pkg/errors"
 	"github.com/sirupsen/logrus"
 
-	wss "github.aaf.cloud/platform/websocket-service"
+	wss "github.com/theaaf/websocket-service"
 )
 
 type GraphQLWSCluster interface {

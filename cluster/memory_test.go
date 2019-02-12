@@ -3,7 +3,7 @@ package cluster
 import (
 	"testing"
 
-	"github.aaf.cloud/platform/websocket-service/cluster/clustertest"
+	"github.com/theaaf/websocket-service/cluster/clustertest"
 )
 
 func TestMemoryCluster(t *testing.T) {

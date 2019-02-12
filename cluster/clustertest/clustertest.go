@@ -6,7 +6,7 @@ import (
 
 	"github.com/stretchr/testify/assert"
 
-	"github.aaf.cloud/platform/websocket-service"
+	"github.com/theaaf/websocket-service"
 )
 
 type Cluster struct {

@@ -1,0 +1,8 @@
+language: go
+go:
+  - 1.11.x
+services:
+  - docker
+script:
+  - go test -v -race ./...
+  - docker build .
