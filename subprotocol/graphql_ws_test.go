@@ -185,6 +185,38 @@ func TestGraphQLWS(t *testing.T) {
 		assert.Equal(t, "complete", msg.Type)
 	})
 
+	t.Run("QueryError", func(t *testing.T) {
+		require.NoError(t, client.WriteJSON(map[string]interface{}{
+			"id":   "query",
+			"type": "start",
+			"payload": map[string]interface{}{
+				"query": `
+					query {
+						foo
+					}
+				`,
+			},
+		}))
+
+		origin.WaitForRequest(func(request *subprotocol.GraphQLWSOriginRequest) (*subprotocol.GraphQLWSOriginResponse, error) {
+			return &subprotocol.GraphQLWSOriginResponse{
+				Result: &subprotocol.GraphQLWSResult{
+					Data:   json.RawMessage(`{"foo": null}`),
+					Errors: json.RawMessage(`[{"message": "error!"}]`),
+				},
+			}, nil
+		})
+
+		require.NoError(t, client.ReadJSON(&msg))
+		assert.Equal(t, "query", msg.Id)
+		assert.Equal(t, "data", msg.Type)
+		assert.JSONEq(t, `{"data":{"foo": null},"errors":[{"message": "error!"}]}`, string(msg.Payload))
+
+		require.NoError(t, client.ReadJSON(&msg))
+		assert.Equal(t, "query", msg.Id)
+		assert.Equal(t, "complete", msg.Type)
+	})
+
 	t.Run("Subscription", func(t *testing.T) {
 		require.NoError(t, client.WriteJSON(map[string]interface{}{
 			"id":   "sub",
