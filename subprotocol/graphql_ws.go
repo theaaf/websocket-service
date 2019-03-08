@@ -291,7 +291,7 @@ func (sp *GraphQLWS) graphQLWSMessageWithGraphQLResult(id string, result *GraphQ
 		return &graphQLWSMessage{
 			Id:      id,
 			Type:    graphQLWSMessageTypeError,
-			Payload: json.RawMessage(`[{"message": "An internal error has occurred."}]`),
+			Payload: json.RawMessage(`{"message": "An internal error has occurred."}`),
 		}
 	}
 	return &graphQLWSMessage{
@@ -415,13 +415,13 @@ func (sp *GraphQLWS) handleOriginRequest(r *wss.OriginRequest) {
 
 		if response != nil {
 			if response.Error != "" {
-				payload, err := jsoniter.Marshal([]struct {
+				payload, err := jsoniter.Marshal(struct {
 					Message string `json:"message"`
 				}{
-					{Message: response.Error},
+					Message: response.Error,
 				})
 				if err != nil {
-					payload = []byte(`[{"message": "An internal error has occurred."}]`)
+					payload = []byte(`{"message": "An internal error has occurred."}`)
 				}
 				outgoing = append(outgoing, &graphQLWSMessage{
 					Id:      msg.Id,
