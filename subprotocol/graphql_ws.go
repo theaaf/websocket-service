@@ -103,7 +103,7 @@ type GraphQLWSOriginResponse struct {
 
 type GraphQLWSResult struct {
 	Data   json.RawMessage
-	Errors json.RawMessage
+	Errors json.RawMessage `json:"Errors,omitempty"`
 }
 
 type GraphQLWSSubscription struct {
